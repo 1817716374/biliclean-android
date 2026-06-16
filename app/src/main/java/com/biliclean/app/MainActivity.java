@@ -2617,11 +2617,11 @@ public final class MainActivity extends Activity {
         panel.setBackground(topRounded(0xFFFFFFFF, dp(18)));
 
         View handle = new View(this);
-        handle.setBackground(rounded(0xFFD2D2D2, dp(3)));
+        handle.setBackground(rounded(0xFFD2D2D2, dp(2)));
         handle.setOnTouchListener((view, event) -> handleCommentsDrag(event));
-        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(36), dp(5));
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(30), dp(3));
         handleParams.gravity = Gravity.CENTER_HORIZONTAL;
-        handleParams.topMargin = dp(2);
+        handleParams.topMargin = dp(1);
         panel.addView(handle, handleParams);
 
         LinearLayout header = new LinearLayout(this);
@@ -2629,39 +2629,39 @@ public final class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(12), 0, 0, 0);
         header.setOnTouchListener((view, event) -> handleCommentsDrag(event));
-        TextView intro = text("简介", 18, 0xFF9A9EA6, Typeface.BOLD);
+        TextView intro = text("简介", 17, 0xFF9A9EA6, Typeface.BOLD);
         intro.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(intro, new LinearLayout.LayoutParams(dp(52), dp(34)));
-        commentTitleView = text("评论（0）", 19, 0xFF171A1F, Typeface.BOLD);
+        header.addView(intro, new LinearLayout.LayoutParams(dp(52), dp(31)));
+        commentTitleView = text("评论（0）", 17, 0xFF171A1F, Typeface.BOLD);
         commentTitleView.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(commentTitleView, new LinearLayout.LayoutParams(0, dp(34), 1));
+        header.addView(commentTitleView, new LinearLayout.LayoutParams(0, dp(31), 1));
         commentExpandButton = iconImage(R.drawable.ic_bili_expand, "expand comments");
-        commentExpandButton.setBackground(rounded(0xFFF1F2F4, dp(21)));
+        commentExpandButton.setBackground(rounded(0xFFF1F2F4, dp(17)));
         commentExpandButton.setContentDescription("展开/收起评论");
         commentExpandButton.setOnClickListener(v -> {
             commentsExpanded = !commentsExpanded;
             updateCommentExpandIcon();
             animateCommentsPanelHeight(commentsExpanded ? commentsFullHeight() : commentsHalfHeight());
         });
-        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(34), dp(34));
         closeParams.rightMargin = dp(2);
         header.addView(commentExpandButton, closeParams);
         panel.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         View activeTab = new View(this);
         activeTab.setBackground(rounded(BILI_PINK, dp(2)));
-        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(dp(22), dp(4));
-        activeParams.leftMargin = dp(102);
-        activeParams.bottomMargin = dp(4);
+        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(dp(16), dp(3));
+        activeParams.leftMargin = dp(95);
+        activeParams.bottomMargin = dp(6);
         panel.addView(activeTab, activeParams);
 
         commentSubHeader = new LinearLayout(this);
         commentSubHeader.setGravity(Gravity.CENTER_VERTICAL);
         commentSubHeader.setPadding(0, 0, 0, 0);
-        commentSectionTitleView = text("热门评论", 15, 0xFF8E9299, Typeface.NORMAL);
+        commentSectionTitleView = text("热门评论", 14, 0xFF8E9299, Typeface.NORMAL);
         commentSectionTitleView.setGravity(Gravity.CENTER_VERTICAL);
         commentSubHeader.addView(commentSectionTitleView, new LinearLayout.LayoutParams(0, dp(30), 1));
-        commentSortView = text("☰ 按热度", 15, 0xFF8E9299, Typeface.NORMAL);
+        commentSortView = text("☰ 按热度", 14, 0xFF8E9299, Typeface.NORMAL);
         commentSortView.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         commentSortView.setOnClickListener(v -> {
             if (commentDetailOpen) return;
@@ -2701,11 +2701,11 @@ public final class MainActivity extends Activity {
         commentInput.setHint(currentCommentControl.rootHint());
         commentInput.setHintTextColor(0xFF9CA1A8);
         commentInput.setTextColor(0xFF1D1F23);
-        commentInput.setTextSize(16);
-        commentInput.setPadding(dp(16), 0, dp(16), 0);
+        commentInput.setTextSize(15);
+        commentInput.setPadding(dp(14), 0, dp(14), 0);
         commentInput.setMinHeight(0);
         commentInput.setIncludeFontPadding(false);
-        commentInput.setBackground(rounded(0xFFF0F1F4, dp(20)));
+        commentInput.setBackground(rounded(0xFFF0F1F4, dp(16)));
         commentInput.setOnFocusChangeListener((view, hasFocus) -> {
             if (hasFocus) {
                 commentInputEverFocused = true;
@@ -2727,13 +2727,13 @@ public final class MainActivity extends Activity {
             public void afterTextChanged(Editable s) {
             }
         });
-        inputRow.addView(commentInput, new LinearLayout.LayoutParams(0, dp(40), 1));
+        inputRow.addView(commentInput, new LinearLayout.LayoutParams(0, dp(32), 1));
 
-        sendCommentButton = pillText("☻", 22, 0xFF8F949C, 0xFFF0F1F4);
+        sendCommentButton = pillText("☻", 18, 0xFF8F949C, 0xFFF0F1F4);
         sendCommentButton.setGravity(Gravity.CENTER);
         sendCommentButton.setOnClickListener(v -> sendComment());
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(40), dp(40));
-        sendParams.leftMargin = dp(10);
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(32), dp(32));
+        sendParams.leftMargin = dp(8);
         inputRow.addView(sendCommentButton, sendParams);
         panel.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
         updateCommentSendButton();
@@ -4870,7 +4870,7 @@ public final class MainActivity extends Activity {
                 0,
                 child ? Math.round(rootWidth() * 0.018f) : Math.round(rootWidth() * 0.026f));
 
-        int avatarSize = Math.max(1, Math.round(rootWidth() * (child ? 0.058f : 0.078f)));
+        int avatarSize = Math.max(1, Math.round(rootWidth() * (child ? 0.058f : 0.083f)));
         FrameLayout avatarBox = new FrameLayout(this);
         avatarBox.setBackground(rounded(child ? 0xFFB8C0CA : 0xFFFFD166, avatarSize / 2));
         TextView avatarFallback = text(userInitial(comment.user), child ? 12 : 14, Color.WHITE, Typeface.BOLD);
@@ -4933,7 +4933,7 @@ public final class MainActivity extends Activity {
         }
         body.addView(nameRow, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView message = text("", child ? 14 : 17, 0xFF24262B, Typeface.NORMAL);
+        TextView message = text("", child ? 14 : 16, 0xFF24262B, Typeface.NORMAL);
         renderCommentText(message, comment);
         message.setLineSpacing(dp(1), 1.04f);
         message.setPadding(0, dp(5), 0, 0);
@@ -4948,7 +4948,7 @@ public final class MainActivity extends Activity {
         LinearLayout meta = new LinearLayout(this);
         meta.setGravity(Gravity.CENTER_VERTICAL);
         meta.setPadding(0, dp(6), 0, 0);
-        TextView left = text(comment.ctimeText + locationText(comment.location) + "  回复", 13, 0xFFA7ABB2, Typeface.NORMAL);
+        TextView left = text(comment.ctimeText + locationText(comment.location) + "  回复", 12, 0xFFA7ABB2, Typeface.NORMAL);
         meta.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
         meta.addView(buildCommentActionStrip(comment), new LinearLayout.LayoutParams(commentActionStripWidth(), commentActionStripHeight()));
         body.addView(meta, new LinearLayout.LayoutParams(-1, -2));
@@ -5150,7 +5150,7 @@ public final class MainActivity extends Activity {
         strip.setOrientation(LinearLayout.HORIZONTAL);
 
         ImageView likeIcon = iconImage(R.drawable.ic_bili_comment_like, "like");
-        TextView likeCount = text(formatCount(comment.like), 13, 0xFF7E838B, Typeface.NORMAL);
+        TextView likeCount = text(formatCount(comment.like), 12, 0xFF7E838B, Typeface.NORMAL);
         likeCount.setGravity(Gravity.CENTER_VERTICAL);
         ImageView dislikeIcon = iconImage(R.drawable.ic_bili_comment_dislike, "dislike");
         View.OnClickListener likeListener = v -> {
@@ -5217,15 +5217,15 @@ public final class MainActivity extends Activity {
     }
 
     private int commentActionStripWidth() {
-        return Math.max(1, Math.round(rootWidth() * 0.306f));
+        return Math.max(1, Math.round(rootWidth() * 0.286f));
     }
 
     private int commentActionStripHeight() {
-        return Math.max(1, Math.round(rootWidth() * 0.052f));
+        return Math.max(1, Math.round(rootWidth() * 0.046f));
     }
 
     private int commentActionIconSize() {
-        return Math.max(1, Math.round(rootWidth() * 0.042f));
+        return Math.max(1, Math.round(rootWidth() * 0.036f));
     }
 
     private int commentPictureWidth(CommentItem comment, int index) {
@@ -5773,18 +5773,18 @@ public final class MainActivity extends Activity {
         ViewGroup.LayoutParams rawParams = sendCommentButton.getLayoutParams();
         if (rawParams instanceof LinearLayout.LayoutParams) {
             LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) rawParams;
-            int targetWidth = hasText ? dp(68) : dp(40);
-            if (params.width != targetWidth || params.height != dp(40)) {
+            int targetWidth = hasText ? dp(60) : dp(32);
+            if (params.width != targetWidth || params.height != dp(32)) {
                 params.width = targetWidth;
-                params.height = dp(40);
+                params.height = dp(32);
                 sendCommentButton.setLayoutParams(params);
             }
         }
         sendCommentButton.setEnabled(enabled);
         sendCommentButton.setText(hasText ? "发送" : "☻");
-        sendCommentButton.setTextSize(hasText ? 14 : 22);
+        sendCommentButton.setTextSize(hasText ? 13 : 18);
         sendCommentButton.setTextColor(hasText ? (enabled ? Color.WHITE : 0xFF9CA1A8) : 0xFF8F949C);
-        sendCommentButton.setBackground(rounded(hasText ? (enabled ? BILI_PINK : 0xFFE8EAF0) : 0xFFF0F1F4, dp(20)));
+        sendCommentButton.setBackground(rounded(hasText ? (enabled ? BILI_PINK : 0xFFE8EAF0) : 0xFFF0F1F4, dp(16)));
     }
 
     private void sendComment() {
