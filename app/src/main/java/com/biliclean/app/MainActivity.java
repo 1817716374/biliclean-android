@@ -396,6 +396,7 @@ public final class MainActivity extends Activity {
     private boolean touchMovedBeyondTapSlop;
     private float touchDownX;
     private boolean waitingForSwitchFirstFrame;
+    private boolean instantSwipePreviewRelease;
     private boolean consumeDanmakuUnfreezeTouch;
 
     private final Runnable releaseHeldSwipePreviewRunnable = new Runnable() {
@@ -1212,8 +1213,17 @@ public final class MainActivity extends Activity {
         if (!holdSwipePreviewUntilReady) return;
         holdSwipePreviewUntilReady = false;
         waitingForSwitchFirstFrame = false;
+        boolean instantRelease = instantSwipePreviewRelease;
+        instantSwipePreviewRelease = false;
         uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
         pageLayer.animate().cancel();
+        if (instantRelease) {
+            pageLayer.setAlpha(1f);
+            hideSwipePreview();
+            endSwipeLayerBoost();
+            switchAnimating = false;
+            return;
+        }
         pageLayer.animate()
                 .alpha(1f)
                 .setDuration(80)
@@ -1228,6 +1238,7 @@ public final class MainActivity extends Activity {
     private void cancelHeldSwipePreview() {
         holdSwipePreviewUntilReady = false;
         waitingForSwitchFirstFrame = false;
+        instantSwipePreviewRelease = false;
         uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
         pageLayer.animate().cancel();
         hideSwipePreview();
@@ -2672,12 +2683,14 @@ public final class MainActivity extends Activity {
         player.play();
         long afterPlayerMs = SystemClock.uptimeMillis();
         if (keepSwipePreview) {
-            waitingForSwitchFirstFrame = !((useWarmPlayer && warmWasReady) || useBackPlayer);
+            instantSwipePreviewRelease = (useWarmPlayer && warmWasReady) || useBackPlayer;
+            waitingForSwitchFirstFrame = !instantSwipePreviewRelease;
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
             uiHandler.postDelayed(releaseHeldSwipePreviewRunnable,
-                    waitingForSwitchFirstFrame ? 900 : 90);
+                    waitingForSwitchFirstFrame ? 900 : 24);
         } else {
             waitingForSwitchFirstFrame = false;
+            instantSwipePreviewRelease = false;
         }
         if (commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE) {
             hideCommentDetailDrawer(false);
