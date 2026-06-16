@@ -1158,8 +1158,9 @@ public final class MainActivity extends Activity {
         }
         switchAnimating = true;
         int target = forward ? -root.getHeight() : root.getHeight();
-        animateSwipePreviewTo(0, 320);
-        animateSwipeChromeTo(target, 320, () -> {
+        long duration = Math.abs(velocityY) > 1800f ? 180L : 240L;
+        animateSwipePreviewTo(0, duration);
+        animateSwipeChromeTo(target, duration, () -> {
             setSwipeChromeAlpha(0f);
             resetSwipeChromeTranslationOnly();
             holdSwipePreviewUntilReady = true;
@@ -1179,7 +1180,7 @@ public final class MainActivity extends Activity {
         pageLayer.animate().cancel();
         pageLayer.animate()
                 .alpha(1f)
-                .setDuration(140)
+                .setDuration(80)
                 .withEndAction(() -> {
                     hideSwipePreview();
                     endSwipeLayerBoost();
@@ -3840,13 +3841,9 @@ public final class MainActivity extends Activity {
                 ? currentItem.width / (float) currentItem.height
                 : (horizontal ? 16f / 9f : 9f / 16f);
         if (horizontal) {
-            int width = Math.max(1, Math.round(rw * 0.76f));
-            int height = Math.max(1, Math.round(width / Math.max(0.1f, aspect)));
-            int left = Math.max(0, (rw - width) / 2);
-            int normalTop = docY(24.57f);
-            int maxTop = Math.max(0, panelTop - dp(72) - height);
-            int top = Math.max(docY(12f), Math.min(normalTop, maxTop));
-            return new Rect(left, top, left + width, top + height);
+            int height = Math.min(panelTop, Math.max(1, Math.round(rw / Math.max(0.1f, aspect))));
+            int top = Math.max(0, panelTop - height);
+            return new Rect(0, top, rw, top + height);
         }
         int height = panelTop;
         int width = Math.min(rw, Math.max(1, Math.round(height * Math.max(0.1f, aspect))));
