@@ -136,6 +136,7 @@ public final class MainActivity extends Activity {
     private ExoPlayer player;
     private ExoPlayer warmPlayer;
     private boolean warmPlayerReady;
+    private boolean warmPlayerRenderedFirstFrame;
     private long warmPrepareStartedMs;
     private SimpleCache mediaCache;
     private AudioManager audioManager;
@@ -990,6 +991,15 @@ public final class MainActivity extends Activity {
                 }
                 if (swipeDragging) {
                     lastDragY = dampSwipeDistance(dy);
+                    if (lastDragY < 0f && !canRenderForwardPreview()) {
+                        prefetchNext();
+                        if (swipePreviewPage != null && root != null) {
+                            swipePreviewPage.setTranslationY(root.getHeight());
+                        }
+                        setSwipeChromeTranslation(0f);
+                        lastDragY = 0f;
+                        return true;
+                    }
                     updateSwipePreview(lastDragY);
                     setSwipeChromeTranslation(lastDragY);
                     return true;
@@ -1053,11 +1063,12 @@ public final class MainActivity extends Activity {
                     swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
                     return true;
                 }
-                if (swipeDragging) {
-                    animateSwipeBack(180, null);
-                    swipeDragging = false;
-                    return true;
-                }
+        if (swipeDragging) {
+            PrefetchedVideo previewVideo = swipePreviewForward ? peekForwardPreview() : null;
+            animateSwipeBack(180, () -> resetWarmPreviewPlayback(previewVideo));
+            swipeDragging = false;
+            return true;
+        }
                 resetSwipeChrome();
                 pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
                 swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -1124,10 +1135,15 @@ public final class MainActivity extends Activity {
         float distanceThreshold = Math.max(dp(84), root.getHeight() * 0.14f);
         boolean shouldSwitch = Math.abs(dy) >= distanceThreshold || Math.abs(velocityY) > SWIPE_SWITCH_VELOCITY_THRESHOLD;
         if (!shouldSwitch) {
-            animateSwipeBack(220, null);
+            PrefetchedVideo previewVideo = dy < 0 ? peekForwardPreview() : null;
+            animateSwipeBack(220, () -> resetWarmPreviewPlayback(previewVideo));
             return;
         }
         boolean forward = dy < 0;
+        if (forward && !canRenderForwardPreview()) {
+            animateSwipeBack(220, () -> resetWarmPreviewPlayback(peekForwardPreview()));
+            return;
+        }
         if (!forward && previousStack.isEmpty()) {
             animateSwipeBack(220, () -> showCenter("已经是第一条"));
             return;
@@ -1199,6 +1215,37 @@ public final class MainActivity extends Activity {
         }
         float base = forward ? root.getHeight() : -root.getHeight();
         swipePreviewPage.setTranslationY(base + dy);
+        if (forward) startWarmPreviewPlayback(previewVideo);
+    }
+
+    private boolean canRenderForwardPreview() {
+        return canRenderPreviewVideo(peekForwardPreview());
+    }
+
+    private boolean canRenderPreviewVideo(PrefetchedVideo video) {
+        return video != null
+                && warmPlayer != null
+                && warmVideo == video
+                && warmPlayerRenderedFirstFrame;
+    }
+
+    private void startWarmPreviewPlayback(PrefetchedVideo video) {
+        if (!canRenderPreviewVideo(video)) return;
+        try {
+            warmPlayer.setVolume(0f);
+            warmPlayer.play();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void resetWarmPreviewPlayback(PrefetchedVideo video) {
+        if (video == null || warmPlayer == null || warmVideo != video) return;
+        try {
+            warmPlayer.pause();
+            warmPlayer.seekTo(0L);
+            warmPlayer.setVolume(0f);
+        } catch (Exception ignored) {
+        }
     }
 
     private void showSwipePreviewItem(PrefetchedVideo video) {
@@ -1210,7 +1257,7 @@ public final class MainActivity extends Activity {
                 swipePreviewPlayerView.setPlayer(null);
                 swipePreviewPlayerView.setVisibility(View.GONE);
             }
-            swipePreviewView.setVisibility(View.VISIBLE);
+            swipePreviewView.setVisibility(View.GONE);
             swipePreviewView.setImageDrawable(null);
             swipePreviewView.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if (swipePreviewAvatar != null) swipePreviewAvatar.setImageDrawable(null);
@@ -1239,10 +1286,8 @@ public final class MainActivity extends Activity {
         FeedItem item = video.item;
         swipePreviewItem = item;
         swipePreviewVideoKey = videoIdentity(item);
-        applyVideoViewportLayout(swipePreviewView, item);
         swipePreviewView.setImageDrawable(null);
-        swipePreviewView.setBackgroundColor(Color.BLACK);
-        swipePreviewView.setVisibility(View.VISIBLE);
+        swipePreviewView.setVisibility(View.GONE);
         attachWarmPlayerToSwipePreview(video);
         if (swipePreviewAvatar != null) loadImageInto(item.ownerFace, swipePreviewAvatar);
         swipePreviewWatching.setText(watchingText(item));
@@ -1276,14 +1321,13 @@ public final class MainActivity extends Activity {
         boolean canAttach = swipePreviewForward
                 && video != null
                 && warmPlayer != null
-                && warmVideo == video
-                && warmPlayerReady;
+                && warmVideo == video;
         if (!canAttach) {
             if (swipePreviewPlayerView.getPlayer() != null) {
                 swipePreviewPlayerView.setPlayer(null);
             }
             swipePreviewPlayerView.setVisibility(View.GONE);
-            swipePreviewView.setVisibility(View.VISIBLE);
+            swipePreviewView.setVisibility(View.GONE);
             return;
         }
         applyVideoViewportLayout(swipePreviewPlayerView, video.item);
@@ -1291,7 +1335,7 @@ public final class MainActivity extends Activity {
             swipePreviewPlayerView.setPlayer(warmPlayer);
         }
         swipePreviewPlayerView.setVisibility(View.VISIBLE);
-        swipePreviewView.setVisibility(View.INVISIBLE);
+        swipePreviewView.setVisibility(View.GONE);
         swipePreviewPlayerView.bringToFront();
         if (swipePreviewTopShade != null) swipePreviewTopShade.bringToFront();
         if (swipePreviewRightShade != null) swipePreviewRightShade.bringToFront();
@@ -1423,7 +1467,7 @@ public final class MainActivity extends Activity {
             swipePreviewPlayerView.setVisibility(View.GONE);
         }
         swipePreviewView.setImageDrawable(null);
-        swipePreviewView.setVisibility(View.VISIBLE);
+        swipePreviewView.setVisibility(View.GONE);
         swipePreviewItem = null;
         swipePreviewVideoKey = "";
         swipePreviewPage.setTranslationY(0);
@@ -2485,19 +2529,21 @@ public final class MainActivity extends Activity {
             warmPlayer = null;
             warmVideo = null;
             warmPlayerReady = false;
+            warmPlayerRenderedFirstFrame = false;
             warmPrepareStartedMs = 0L;
             boolean warmAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (warmAttachedToPreview) {
                 PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
                 swipePreviewPlayerView.setVisibility(View.GONE);
-                swipePreviewView.setVisibility(View.VISIBLE);
+                swipePreviewView.setVisibility(View.GONE);
             } else {
                 playerView.setPlayer(player);
             }
             if (oldPlayer != null) {
                 releasePlayerLater(oldPlayer);
             }
+            player.setVolume(1f);
             android.util.Log.d("BiliClean", "use warm player bvid=" + currentItem.bvid);
             afterAttachMs = SystemClock.uptimeMillis();
             afterPrepareMs = afterAttachMs;
@@ -2511,6 +2557,7 @@ public final class MainActivity extends Activity {
         }
         player.setRepeatMode(autoSlideEnabled ? Player.REPEAT_MODE_OFF : Player.REPEAT_MODE_ONE);
         player.setPlaybackSpeed(playbackSpeed);
+        player.setVolume(1f);
         long resumePosition = savedPlaybackPosition(video.item);
         if (resumePosition > 0L) {
             player.seekTo(resumePosition);
@@ -2695,7 +2742,8 @@ public final class MainActivity extends Activity {
         return video != null
                 && warmPlayer != null
                 && warmVideo == video
-                && warmPlayerReady;
+                && warmPlayerReady
+                && warmPlayerRenderedFirstFrame;
     }
 
     private PrefetchedVideo peekNextReadyLocked() {
@@ -2813,10 +2861,12 @@ public final class MainActivity extends Activity {
                 warmVideo = video;
                 synchronized (prefetchLock) {
                     warmPlayerReady = false;
+                    warmPlayerRenderedFirstFrame = false;
                     warmPrepareStartedMs = SystemClock.uptimeMillis();
                 }
                 String warmVideoId = videoIdentity(video.item);
                 warmPlayer = newPlaybackPlayer();
+                warmPlayer.setVolume(0f);
                 warmPlayer.addListener(new Player.Listener() {
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {
@@ -2842,10 +2892,26 @@ public final class MainActivity extends Activity {
                             }
                         }
                     }
+
+                    @Override
+                    public void onRenderedFirstFrame() {
+                        if (warmPlayer != null
+                                && warmVideo == video
+                                && warmVideoId.equals(videoIdentity(video.item))) {
+                            synchronized (prefetchLock) {
+                                warmPlayerRenderedFirstFrame = true;
+                                prefetchLock.notifyAll();
+                            }
+                            if (swipePreviewPage != null) {
+                                stageWarmPlayerInSwipePreview(video);
+                            }
+                        }
+                    }
                 });
                 warmPlayer.setRepeatMode(Player.REPEAT_MODE_OFF);
                 warmPlayer.setPlaybackSpeed(playbackSpeed);
                 warmPlayer.setMediaSource(buildMediaSource(video));
+                stageWarmPlayerInSwipePreview(video);
                 warmPlayer.prepare();
                 android.util.Log.d("BiliClean", "warm next bvid=" + video.item.bvid);
             } catch (Exception error) {
@@ -2865,7 +2931,7 @@ public final class MainActivity extends Activity {
             if (swipePreviewPlayerView != null && swipePreviewPlayerView.getPlayer() == warmPlayer) {
                 swipePreviewPlayerView.setPlayer(null);
                 swipePreviewPlayerView.setVisibility(View.GONE);
-                if (swipePreviewView != null) swipePreviewView.setVisibility(View.VISIBLE);
+                if (swipePreviewView != null) swipePreviewView.setVisibility(View.GONE);
             }
             try {
                 warmPlayer.release();
@@ -2876,6 +2942,7 @@ public final class MainActivity extends Activity {
         warmVideo = null;
         synchronized (prefetchLock) {
             warmPlayerReady = false;
+            warmPlayerRenderedFirstFrame = false;
             warmPrepareStartedMs = 0L;
             prefetchLock.notifyAll();
         }
@@ -3663,6 +3730,19 @@ public final class MainActivity extends Activity {
         Rect compactFrame = commentsVideoFrameForPanelTop(finalPanelTop);
         Rect normalFrame = portraitVideoFrame();
         float normalTranslation = Math.max(0f, normalFrame.bottom - finalPanelTop);
+        boolean closing = endAction != null;
+        boolean horizontalMotionOnly = currentItem != null
+                && currentItem.isHorizontal()
+                && compactFrame.width() == normalFrame.width()
+                && compactFrame.height() == normalFrame.height();
+        Rect horizontalBaseFrame = closing ? compactFrame : normalFrame;
+        float horizontalTargetTranslation = closing
+                ? normalFrame.top - compactFrame.top
+                : compactFrame.top - normalFrame.top;
+        if (horizontalMotionOnly && playerView != null) {
+            applyPlayerFrame(horizontalBaseFrame, resizeMode);
+            playerView.setTranslationY(0f);
+        }
         commentsPanelAnimator = ValueAnimator.ofFloat(fromTranslation, toTranslation);
         commentsPanelAnimator.setDuration(durationMs);
         commentsPanelAnimator.setInterpolator(swipeInterpolator);
@@ -3670,17 +3750,20 @@ public final class MainActivity extends Activity {
             float translation = (Float) animation.getAnimatedValue();
             commentsPanel.setTranslationY(translation);
             float fraction = animation.getAnimatedFraction();
-            boolean closing = endAction != null;
-            Rect frame = commentsTransitionFrame(
-                    compactFrame,
-                    normalFrame,
-                    translation,
-                    normalTranslation,
-                    fraction,
-                    closing,
-                    fromTranslation,
-                    toTranslation);
-            applyPlayerFrame(frame, resizeMode);
+            if (horizontalMotionOnly && playerView != null) {
+                playerView.setTranslationY(horizontalTargetTranslation * fraction);
+            } else {
+                Rect frame = commentsTransitionFrame(
+                        compactFrame,
+                        normalFrame,
+                        translation,
+                        normalTranslation,
+                        fraction,
+                        closing,
+                        fromTranslation,
+                        toTranslation);
+                applyPlayerFrame(frame, resizeMode);
+            }
             if (danmakuLayer != null) danmakuLayer.invalidate();
         });
         commentsPanelAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
@@ -3691,6 +3774,10 @@ public final class MainActivity extends Activity {
                 boolean current = commentsPanelAnimator == animation;
                 if (current) commentsPanelAnimator = null;
                 if (current) {
+                    if (horizontalMotionOnly && playerView != null) {
+                        playerView.setTranslationY(0f);
+                        applyPlayerFrame(closing ? normalFrame : compactFrame, resizeMode);
+                    }
                     if (playerView != null) playerView.setLayerType(View.LAYER_TYPE_NONE, null);
                     commentsPanel.setLayerType(View.LAYER_TYPE_NONE, null);
                 }
@@ -3701,6 +3788,7 @@ public final class MainActivity extends Activity {
             public void onAnimationCancel(android.animation.Animator animation) {
                 canceled = true;
                 if (commentsPanelAnimator == animation) commentsPanelAnimator = null;
+                if (playerView != null) playerView.setTranslationY(0f);
                 if (playerView != null) playerView.setLayerType(View.LAYER_TYPE_NONE, null);
                 commentsPanel.setLayerType(View.LAYER_TYPE_NONE, null);
             }
