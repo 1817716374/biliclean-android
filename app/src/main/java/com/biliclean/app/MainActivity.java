@@ -1261,6 +1261,7 @@ public final class MainActivity extends Activity {
     private void cancelSwipeChromeAnimation() {
         pageLayer.animate().cancel();
         swipePreviewPage.animate().cancel();
+        if (currentSurfacePage != null) currentSurfacePage.animate().cancel();
     }
 
     private void updateSwipePreview(float dy) {
@@ -1777,9 +1778,19 @@ public final class MainActivity extends Activity {
 
     private void setSwipeChromeTranslation(float translationY) {
         pageLayer.setTranslationY(translationY);
+        if (currentSurfacePage != null) {
+            currentSurfacePage.setTranslationY(translationY);
+        }
     }
 
     private void animateSwipeChromeTo(float translationY, long duration, Runnable endAction) {
+        if (currentSurfacePage != null) {
+            currentSurfacePage.animate()
+                    .translationY(translationY)
+                    .setInterpolator(swipeInterpolator)
+                    .setDuration(duration)
+                    .start();
+        }
         pageLayer.animate()
                 .translationY(translationY)
                 .setInterpolator(swipeInterpolator)
@@ -2825,7 +2836,11 @@ public final class MainActivity extends Activity {
         boolean warmAttachedToPreviewBeforePlay = useWarmPlayer
                 && swipePreviewPlayerView != null
                 && swipePreviewPlayerView.getPlayer() == warmPlayer;
-        boolean deferItemViewUpdate = keepSwipePreview && warmAttachedToPreviewBeforePlay;
+        if (useBackPlayer && currentSurfacePage != null) {
+            clearCurrentSurfaceHostForPlayer(player);
+            ensureMainPlayerSurfaceVisible();
+        }
+        boolean deferItemViewUpdate = false;
         setOverlayVisibility(true);
         if (!deferItemViewUpdate) {
             updateItemViews(video.item, video.playInfo);
@@ -2906,7 +2921,7 @@ public final class MainActivity extends Activity {
             waitingForSwitchFirstFrame = !instantSwipePreviewRelease;
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
             uiHandler.postDelayed(releaseHeldSwipePreviewRunnable,
-                    waitingForSwitchFirstFrame ? 900 : 24);
+                    waitingForSwitchFirstFrame ? 900 : 0);
         } else {
             waitingForSwitchFirstFrame = false;
             instantSwipePreviewRelease = false;
