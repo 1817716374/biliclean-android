@@ -109,7 +109,9 @@ public final class MainActivity extends Activity {
     private static final String PREF_QUALITY_QN = "quality_qn";
     private static final int BILI_PINK = 0xFFFF6699;
     private static final long MEDIA_CACHE_BYTES = 300L * 1024L * 1024L;
-    private static final int FORWARD_PREFETCH_TARGET = 5;
+    private static final int FORWARD_PREFETCH_BATCH_SIZE = 5;
+    private static final int FORWARD_PREFETCH_REFILL_THRESHOLD = 2;
+    private static final int FORWARD_PREFETCH_LIMIT = 10;
     private static final long PREFETCH_STREAM_BYTES = 2L * 1024L * 1024L;
     private static final long PROGRESS_FRAME_BUCKET_MS = 4000L;
     private static final float DESIGN_STATUS_BOTTOM_PCT = 4.95f;
@@ -407,6 +409,18 @@ public final class MainActivity extends Activity {
         }
     };
 
+    private final Player.Listener playbackListener = new Player.Listener() {
+        @Override
+        public void onPlaybackStateChanged(int playbackState) {
+            if (playbackState == Player.STATE_READY && holdSwipePreviewUntilReady) {
+                releaseHeldSwipePreview();
+            }
+            if (playbackState == Player.STATE_ENDED && autoSlideEnabled && !switchAnimating) {
+                playNext();
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -497,23 +511,18 @@ public final class MainActivity extends Activity {
                 new LeastRecentlyUsedCacheEvictor(MEDIA_CACHE_BYTES),
                 new StandaloneDatabaseProvider(this)
         );
-        player = new ExoPlayer.Builder(this)
+        player = newPlaybackPlayer();
+        player.setRepeatMode(Player.REPEAT_MODE_ONE);
+        playerView.setPlayer(player);
+    }
+
+    private ExoPlayer newPlaybackPlayer() {
+        ExoPlayer next = new ExoPlayer.Builder(this)
                 .setLoadControl(shortBufferLoadControl())
                 .build();
-        player.setSeekParameters(SeekParameters.EXACT);
-        player.setRepeatMode(Player.REPEAT_MODE_ONE);
-        player.addListener(new Player.Listener() {
-            @Override
-            public void onPlaybackStateChanged(int playbackState) {
-                if (playbackState == Player.STATE_READY && holdSwipePreviewUntilReady) {
-                    releaseHeldSwipePreview();
-                }
-                if (playbackState == Player.STATE_ENDED && autoSlideEnabled && !switchAnimating) {
-                    playNext();
-                }
-            }
-        });
-        playerView.setPlayer(player);
+        next.setSeekParameters(SeekParameters.EXACT);
+        next.addListener(playbackListener);
+        return next;
     }
 
     private DefaultLoadControl shortBufferLoadControl() {
@@ -1289,8 +1298,10 @@ public final class MainActivity extends Activity {
     }
 
     private PrefetchedVideo peekForwardPreview() {
-        PrefetchedVideo next = prefetchedVideo;
-        if (next == null) next = nextStack.peekLast();
+        PrefetchedVideo next;
+        synchronized (prefetchLock) {
+            next = peekNextReadyLocked();
+        }
         if (next == null) {
             FeedItem queued = repository.peek();
             if (queued != null) next = new PrefetchedVideo(queued, new PlayInfo());
@@ -2197,9 +2208,13 @@ public final class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 PrefetchedVideo video = forwardReturnStack.pollLast();
-                if (video == null) video = takePrefetched(250);
                 if (video == null) {
-                    video = nextStack.pollLast();
+                    synchronized (prefetchLock) {
+                        if (forwardPrefetchCountLocked() == 0 && !prefetchRunning) {
+                            prefetchNext();
+                        }
+                    }
+                    video = takeNextReady(8000);
                 }
                 if (video == null) video = fetchNextPlayable();
                 if (video == null) {
@@ -2354,12 +2369,28 @@ public final class MainActivity extends Activity {
         setOverlayVisibility(true);
         updateItemViews(video.item, video.playInfo);
 
-        releaseWarmPlayer();
-        MediaSource source = buildMediaSource(video);
+        boolean useWarmPlayer = warmPlayer != null && warmVideo == video;
+        if (useWarmPlayer) {
+            ExoPlayer oldPlayer = player;
+            player = warmPlayer;
+            warmPlayer = null;
+            warmVideo = null;
+            playerView.setPlayer(player);
+            if (oldPlayer != null) {
+                try {
+                    oldPlayer.release();
+                } catch (Exception ignored) {
+                }
+            }
+            android.util.Log.d("BiliClean", "use warm player bvid=" + currentItem.bvid);
+        } else {
+            releaseWarmPlayer();
+            MediaSource source = buildMediaSource(video);
+            player.setMediaSource(source);
+            player.prepare();
+        }
         player.setRepeatMode(autoSlideEnabled ? Player.REPEAT_MODE_OFF : Player.REPEAT_MODE_ONE);
         player.setPlaybackSpeed(playbackSpeed);
-        player.setMediaSource(source);
-        player.prepare();
         long resumePosition = savedPlaybackPosition(video.item);
         if (resumePosition > 0L) {
             player.seekTo(resumePosition);
@@ -2377,6 +2408,7 @@ public final class MainActivity extends Activity {
         }
         loadDanmaku();
         prefetchNext();
+        ensureWarmNextReady(currentPrefetchGeneration());
     }
 
     private void updateItemViews(FeedItem item, PlayInfo playInfo) {
@@ -2468,25 +2500,42 @@ public final class MainActivity extends Activity {
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
     }
 
-    private PrefetchedVideo takePrefetched(long waitMs) {
+    private PrefetchedVideo takeNextReady(long waitMs) {
         synchronized (prefetchLock) {
-            if (prefetchedVideo == null && prefetchRunning && waitMs > 0) {
+            if (forwardPrefetchCountLocked() == 0 && prefetchRunning && waitMs > 0) {
                 try {
                     prefetchLock.wait(waitMs);
                 } catch (InterruptedException error) {
                     Thread.currentThread().interrupt();
                 }
             }
+            return takeNextReadyLocked();
+        }
+    }
+
+    private PrefetchedVideo takeNextReadyLocked() {
+        if (prefetchedVideo != null) {
             PrefetchedVideo video = prefetchedVideo;
             prefetchedVideo = null;
             return video;
         }
+        return nextStack.pollLast();
+    }
+
+    private PrefetchedVideo peekNextReadyLocked() {
+        return prefetchedVideo != null ? prefetchedVideo : nextStack.peekLast();
     }
 
     private void prefetchNext() {
         final int generation;
+        final int existingCount;
         synchronized (prefetchLock) {
-            if (prefetchRunning || forwardPrefetchCountLocked() >= FORWARD_PREFETCH_TARGET) return;
+            existingCount = forwardPrefetchCountLocked();
+            if (prefetchRunning
+                    || existingCount > FORWARD_PREFETCH_REFILL_THRESHOLD
+                    || existingCount >= FORWARD_PREFETCH_LIMIT) {
+                return;
+            }
             prefetchRunning = true;
             generation = prefetchGeneration;
         }
@@ -2495,7 +2544,8 @@ public final class MainActivity extends Activity {
             while (true) {
                 synchronized (prefetchLock) {
                     if (generation != prefetchGeneration
-                            || forwardPrefetchCountLocked() + results.size() >= FORWARD_PREFETCH_TARGET) {
+                            || existingCount + results.size() >= FORWARD_PREFETCH_LIMIT
+                            || results.size() >= FORWARD_PREFETCH_BATCH_SIZE) {
                         break;
                     }
                 }
@@ -2511,7 +2561,7 @@ public final class MainActivity extends Activity {
             synchronized (prefetchLock) {
                 if (generation == prefetchGeneration) {
                     for (PrefetchedVideo result : results) {
-                        if (prefetchedVideo == null) {
+                        if (prefetchedVideo == null && nextStack.isEmpty()) {
                             prefetchedVideo = result;
                             if (firstReady == null) firstReady = result;
                         } else {
@@ -2530,11 +2580,11 @@ public final class MainActivity extends Activity {
                     }
                 });
             }
-            if (firstReady != null) warmPrefetchedVideo(firstReady, generation);
+            ensureWarmNextReady(generation);
             if (!results.isEmpty()) {
                 new Thread(() -> {
                     for (PrefetchedVideo video : results) {
-                        prefetchFirstFrame(video);
+                        prefetchUiImages(video);
                         cacheLeadBytes(video);
                     }
                 }).start();
@@ -2546,18 +2596,39 @@ public final class MainActivity extends Activity {
         return (prefetchedVideo == null ? 0 : 1) + nextStack.size();
     }
 
+    private int currentPrefetchGeneration() {
+        synchronized (prefetchLock) {
+            return prefetchGeneration;
+        }
+    }
+
+    private void ensureWarmNextReady(int generation) {
+        uiHandler.post(() -> {
+            PrefetchedVideo next;
+            synchronized (prefetchLock) {
+                if (generation != prefetchGeneration) return;
+                next = peekNextReadyLocked();
+            }
+            warmPrefetchedVideo(next, generation);
+        });
+    }
+
     private void warmPrefetchedVideo(PrefetchedVideo video, int generation) {
+        if (video == null) {
+            releaseWarmPlayer();
+            return;
+        }
         uiHandler.post(() -> {
             synchronized (prefetchLock) {
-                if (generation != prefetchGeneration || prefetchedVideo != video) return;
+                if (generation != prefetchGeneration || peekNextReadyLocked() != video) return;
+            }
+            if (warmVideo == video && warmPlayer != null) {
+                return;
             }
             releaseWarmPlayer();
             try {
                 warmVideo = video;
-                warmPlayer = new ExoPlayer.Builder(this)
-                        .setLoadControl(shortBufferLoadControl())
-                        .build();
-                warmPlayer.setSeekParameters(SeekParameters.EXACT);
+                warmPlayer = newPlaybackPlayer();
                 warmPlayer.setRepeatMode(Player.REPEAT_MODE_OFF);
                 warmPlayer.setPlaybackSpeed(playbackSpeed);
                 warmPlayer.setMediaSource(buildMediaSource(video));
@@ -2590,12 +2661,15 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void prefetchFirstFrame(PrefetchedVideo video) {
+    private void prefetchUiImages(PrefetchedVideo video) {
         if (video == null || video.item == null || video.playInfo == null) return;
         String key = firstFrameCacheKey(video.item);
-        if (imageCache.containsKey(key)) return;
-        Bitmap frame = downloadBitmap(video.item.cover);
-        if (frame != null) imageCache.put(key, frame);
+        if (!imageCache.containsKey(key)) {
+            Bitmap frame = downloadBitmap(video.item.cover);
+            if (frame != null) imageCache.put(key, frame);
+        }
+        downloadBitmap(video.item.cover);
+        downloadBitmap(video.item.ownerFace);
     }
 
     private void loadFirstFrameInto(PrefetchedVideo video, ImageView target) {
