@@ -1205,7 +1205,7 @@ public final class MainActivity extends Activity {
         animateSwipePreviewTo(0, duration);
         animateSwipeChromeTo(target, duration, () -> {
             setSwipeChromeAlpha(0f);
-            resetSwipeChromeTranslationOnly();
+            resetSwipeChromeTranslationOnly(false);
             holdSwipePreviewUntilReady = true;
             if (forward) {
                 playNext();
@@ -1225,6 +1225,7 @@ public final class MainActivity extends Activity {
         pageLayer.animate().cancel();
         if (instantRelease) {
             pageLayer.setAlpha(1f);
+            hideCurrentSurfaceChromeOnly();
             hideSwipePreview();
             endSwipeLayerBoost();
             switchAnimating = false;
@@ -1234,6 +1235,7 @@ public final class MainActivity extends Activity {
                 .alpha(1f)
                 .setDuration(80)
                 .withEndAction(() -> {
+                    hideCurrentSurfaceChromeOnly();
                     hideSwipePreview();
                     endSwipeLayerBoost();
                     switchAnimating = false;
@@ -1601,7 +1603,6 @@ public final class MainActivity extends Activity {
         currentSurfacePage.setAlpha(1f);
         currentSurfacePage.setTranslationY(0f);
         currentSurfacePlayerView.setVisibility(View.VISIBLE);
-        hideSwipePreviewChromeOnly();
 
         if (playerView != null) {
             playerView.setVisibility(View.GONE);
@@ -1645,6 +1646,16 @@ public final class MainActivity extends Activity {
 
     private PlayerView activePlayerView() {
         return currentSurfacePlayerView != null ? currentSurfacePlayerView : playerView;
+    }
+
+    private void hideCurrentSurfaceChromeOnly() {
+        if (currentSurfacePage == null) return;
+        for (int i = 0; i < currentSurfacePage.getChildCount(); i++) {
+            View child = currentSurfacePage.getChildAt(i);
+            if (child != currentSurfacePlayerView) {
+                child.setVisibility(View.GONE);
+            }
+        }
     }
 
     private PreviewRefs captureSwipePreviewRefs() {
@@ -1805,7 +1816,15 @@ public final class MainActivity extends Activity {
     }
 
     private void resetSwipeChromeTranslationOnly() {
-        setSwipeChromeTranslation(0);
+        resetSwipeChromeTranslationOnly(true);
+    }
+
+    private void resetSwipeChromeTranslationOnly(boolean includeCurrentSurface) {
+        if (includeCurrentSurface) {
+            setSwipeChromeTranslation(0);
+        } else {
+            pageLayer.setTranslationY(0);
+        }
     }
 
     private void setSwipeChromeAlpha(float alpha) {
@@ -2819,8 +2838,8 @@ public final class MainActivity extends Activity {
         boolean keepSwipePreview = holdSwipePreviewUntilReady
                 && swipePreviewPage.getVisibility() == View.VISIBLE;
         if (keepSwipePreview) {
-            resetSwipeChromeTranslationOnly();
             setSwipeChromeAlpha(0f);
+            resetSwipeChromeTranslationOnly(false);
         } else {
             hideSwipePreview();
             resetSwipeChrome();
