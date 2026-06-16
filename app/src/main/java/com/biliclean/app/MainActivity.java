@@ -140,6 +140,7 @@ public final class MainActivity extends Activity {
     private SimpleCache mediaCache;
     private AudioManager audioManager;
     private PlayerView playerView;
+    private PlayerView swipePreviewPlayerView;
     private View videoTouchLayer;
     private ValueAnimator videoViewportAnimator;
     private ValueAnimator commentsPanelAnimator;
@@ -385,6 +386,7 @@ public final class MainActivity extends Activity {
     private int landscapeGestureStartVolume;
     private boolean touchMovedBeyondTapSlop;
     private float touchDownX;
+    private boolean waitingForSwitchFirstFrame;
 
     private final Runnable releaseHeldSwipePreviewRunnable = new Runnable() {
         @Override
@@ -413,11 +415,19 @@ public final class MainActivity extends Activity {
     private final Player.Listener playbackListener = new Player.Listener() {
         @Override
         public void onPlaybackStateChanged(int playbackState) {
-            if (playbackState == Player.STATE_READY && holdSwipePreviewUntilReady) {
+            if (playbackState == Player.STATE_READY && holdSwipePreviewUntilReady && !waitingForSwitchFirstFrame) {
                 releaseHeldSwipePreview();
             }
             if (playbackState == Player.STATE_ENDED && autoSlideEnabled && !switchAnimating) {
                 playNext();
+            }
+        }
+
+        @Override
+        public void onRenderedFirstFrame() {
+            if (holdSwipePreviewUntilReady && waitingForSwitchFirstFrame) {
+                waitingForSwitchFirstFrame = false;
+                releaseHeldSwipePreview();
             }
         }
     };
@@ -687,6 +697,11 @@ public final class MainActivity extends Activity {
     private FrameLayout buildSwipePreviewPage() {
         FrameLayout page = new FrameLayout(this);
         page.setBackgroundColor(Color.BLACK);
+
+        swipePreviewPlayerView = (PlayerView) getLayoutInflater().inflate(R.layout.player_view_texture, page, false);
+        swipePreviewPlayerView.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM);
+        swipePreviewPlayerView.setVisibility(View.GONE);
+        page.addView(swipePreviewPlayerView, new FrameLayout.LayoutParams(-1, -1));
 
         swipePreviewView = new ImageView(this);
         swipePreviewView.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -1135,6 +1150,7 @@ public final class MainActivity extends Activity {
     private void releaseHeldSwipePreview() {
         if (!holdSwipePreviewUntilReady) return;
         holdSwipePreviewUntilReady = false;
+        waitingForSwitchFirstFrame = false;
         uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
         pageLayer.animate().cancel();
         pageLayer.animate()
@@ -1150,6 +1166,7 @@ public final class MainActivity extends Activity {
 
     private void cancelHeldSwipePreview() {
         holdSwipePreviewUntilReady = false;
+        waitingForSwitchFirstFrame = false;
         uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
         pageLayer.animate().cancel();
         hideSwipePreview();
@@ -1189,6 +1206,11 @@ public final class MainActivity extends Activity {
         if (video == null || video.item == null) {
             swipePreviewItem = null;
             swipePreviewVideoKey = "";
+            if (swipePreviewPlayerView != null) {
+                swipePreviewPlayerView.setPlayer(null);
+                swipePreviewPlayerView.setVisibility(View.GONE);
+            }
+            swipePreviewView.setVisibility(View.VISIBLE);
             swipePreviewView.setImageDrawable(null);
             swipePreviewView.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if (swipePreviewAvatar != null) swipePreviewAvatar.setImageDrawable(null);
@@ -1219,6 +1241,7 @@ public final class MainActivity extends Activity {
         swipePreviewVideoKey = videoIdentity(item);
         applyVideoViewportLayout(swipePreviewView, item);
         loadFirstFrameInto(video, swipePreviewView);
+        attachWarmPlayerToSwipePreview(video);
         if (swipePreviewAvatar != null) loadImageInto(item.ownerFace, swipePreviewAvatar);
         swipePreviewWatching.setText(watchingText(item));
         swipePreviewOwner.setText(fallback(item.ownerName, "未知 UP"));
@@ -1244,6 +1267,37 @@ public final class MainActivity extends Activity {
         updateSearchEntrance(swipePreviewSearch, item, false);
         renderSwipePreviewRail(item);
         swipePreviewDanmaku.removeAllViews();
+    }
+
+    private void attachWarmPlayerToSwipePreview(PrefetchedVideo video) {
+        if (swipePreviewPlayerView == null || swipePreviewView == null) return;
+        boolean canAttach = swipePreviewForward
+                && video != null
+                && warmPlayer != null
+                && warmVideo == video
+                && warmPlayerReady;
+        if (!canAttach) {
+            if (swipePreviewPlayerView.getPlayer() != null) {
+                swipePreviewPlayerView.setPlayer(null);
+            }
+            swipePreviewPlayerView.setVisibility(View.GONE);
+            swipePreviewView.setVisibility(View.VISIBLE);
+            return;
+        }
+        applyVideoViewportLayout(swipePreviewPlayerView, video.item);
+        if (swipePreviewPlayerView.getPlayer() != warmPlayer) {
+            swipePreviewPlayerView.setPlayer(warmPlayer);
+        }
+        swipePreviewPlayerView.setVisibility(View.VISIBLE);
+        swipePreviewView.setVisibility(View.INVISIBLE);
+        swipePreviewPlayerView.bringToFront();
+        if (swipePreviewTopShade != null) swipePreviewTopShade.bringToFront();
+        if (swipePreviewRightShade != null) swipePreviewRightShade.bringToFront();
+        if (swipePreviewTopBar != null) swipePreviewTopBar.bringToFront();
+        if (swipePreviewDanmaku != null) swipePreviewDanmaku.bringToFront();
+        if (swipePreviewRail != null) swipePreviewRail.bringToFront();
+        if (swipePreviewBottomInfo != null) swipePreviewBottomInfo.bringToFront();
+        if (swipePreviewFullscreenButton != null) swipePreviewFullscreenButton.bringToFront();
     }
 
     private void renderSwipePreviewRail(FeedItem item) {
@@ -1352,7 +1406,12 @@ public final class MainActivity extends Activity {
 
     private void hideSwipePreview() {
         swipePreviewPage.setVisibility(View.GONE);
+        if (swipePreviewPlayerView != null) {
+            swipePreviewPlayerView.setPlayer(null);
+            swipePreviewPlayerView.setVisibility(View.GONE);
+        }
         swipePreviewView.setImageDrawable(null);
+        swipePreviewView.setVisibility(View.VISIBLE);
         swipePreviewItem = null;
         swipePreviewVideoKey = "";
         swipePreviewPage.setTranslationY(0);
@@ -1391,6 +1450,7 @@ public final class MainActivity extends Activity {
 
         applyVideoResizeMode();
         applyVideoViewportLayout(swipePreviewView, swipePreviewItem);
+        applyVideoViewportLayout(swipePreviewPlayerView, swipePreviewItem);
 
         setFrame(topShade, docFrame(0f, DESIGN_STATUS_BOTTOM_PCT, 100f, 11.5f));
         setFrame(rightShade, docFrame(85.6f, 4.95f, 14.4f, 91.27f));
@@ -2414,7 +2474,15 @@ public final class MainActivity extends Activity {
             warmVideo = null;
             warmPlayerReady = false;
             warmPrepareStartedMs = 0L;
-            playerView.setPlayer(player);
+            boolean warmAttachedToPreview = swipePreviewPlayerView != null
+                    && swipePreviewPlayerView.getPlayer() == player;
+            if (warmAttachedToPreview) {
+                PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
+                swipePreviewPlayerView.setVisibility(View.GONE);
+                swipePreviewView.setVisibility(View.VISIBLE);
+            } else {
+                playerView.setPlayer(player);
+            }
             if (oldPlayer != null) {
                 releasePlayerLater(oldPlayer);
             }
@@ -2438,12 +2506,11 @@ public final class MainActivity extends Activity {
         player.play();
         long afterPlayerMs = SystemClock.uptimeMillis();
         if (keepSwipePreview) {
+            waitingForSwitchFirstFrame = true;
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
-            if (useWarmPlayer && warmWasReady && player.getPlaybackState() == Player.STATE_READY) {
-                uiHandler.post(this::releaseHeldSwipePreview);
-            } else {
-                uiHandler.postDelayed(releaseHeldSwipePreviewRunnable, 1600);
-            }
+            uiHandler.postDelayed(releaseHeldSwipePreviewRunnable, useWarmPlayer && warmWasReady ? 520 : 1600);
+        } else {
+            waitingForSwitchFirstFrame = false;
         }
         if (commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE) {
             hideCommentDetailDrawer(false);
@@ -2753,6 +2820,11 @@ public final class MainActivity extends Activity {
                             }
                             android.util.Log.d("BiliClean", "warm ready bvid=" + video.item.bvid
                                     + " cost=" + costMs + "ms");
+                            if (swipePreviewPage != null
+                                    && swipePreviewPage.getVisibility() == View.VISIBLE
+                                    && warmVideoId.equals(swipePreviewVideoKey)) {
+                                attachWarmPlayerToSwipePreview(video);
+                            }
                         }
                     }
                 });
@@ -2807,6 +2879,11 @@ public final class MainActivity extends Activity {
 
     private void releaseWarmPlayer() {
         if (warmPlayer != null) {
+            if (swipePreviewPlayerView != null && swipePreviewPlayerView.getPlayer() == warmPlayer) {
+                swipePreviewPlayerView.setPlayer(null);
+                swipePreviewPlayerView.setVisibility(View.GONE);
+                if (swipePreviewView != null) swipePreviewView.setVisibility(View.VISIBLE);
+            }
             try {
                 warmPlayer.release();
             } catch (Exception ignored) {
