@@ -149,6 +149,9 @@ public final class MainActivity extends Activity {
     private AudioManager audioManager;
     private PlayerView playerView;
     private PlayerView swipePreviewPlayerView;
+    private FrameLayout currentSurfacePage;
+    private PlayerView currentSurfacePlayerView;
+    private ExoPlayer currentSurfacePlayer;
     private View videoTouchLayer;
     private ValueAnimator videoViewportAnimator;
     private ValueAnimator commentsPanelAnimator;
@@ -200,6 +203,7 @@ public final class MainActivity extends Activity {
     private RailActionButton swipePreviewCoinButton;
     private RailActionButton swipePreviewFavoriteButton;
     private RailActionButton swipePreviewShareButton;
+    private PreviewRefs spareSwipePreviewRefs;
     private DanmakuOverlayView danmakuLayer;
     private FrameLayout topBar;
     private ImageView topPeopleIcon;
@@ -470,6 +474,7 @@ public final class MainActivity extends Activity {
             player.release();
             player = null;
         }
+        clearCurrentSurfaceHostForPlayer(currentSurfacePlayer);
         releaseWarmPlayer();
         releaseWarmAheadPlayer();
         releaseBackPlayer();
@@ -707,6 +712,7 @@ public final class MainActivity extends Activity {
             }
         });
         root.post(this::applyResponsivePortraitLayout);
+        root.post(this::prepareSpareSwipePreviewPage);
     }
 
     private FrameLayout buildSwipePreviewPage() {
@@ -1571,6 +1577,204 @@ public final class MainActivity extends Activity {
         swipePreviewPage.setAlpha(1f);
     }
 
+    private void hideSwipePreviewChromeOnly() {
+        if (swipePreviewView != null) swipePreviewView.setVisibility(View.GONE);
+        if (swipePreviewTopShade != null) swipePreviewTopShade.setVisibility(View.GONE);
+        if (swipePreviewRightShade != null) swipePreviewRightShade.setVisibility(View.GONE);
+        if (swipePreviewTopBar != null) swipePreviewTopBar.setVisibility(View.GONE);
+        if (swipePreviewDanmaku != null) swipePreviewDanmaku.setVisibility(View.GONE);
+        if (swipePreviewRail != null) swipePreviewRail.setVisibility(View.GONE);
+        if (swipePreviewBottomInfo != null) swipePreviewBottomInfo.setVisibility(View.GONE);
+        if (swipePreviewFullscreenButton != null) swipePreviewFullscreenButton.setVisibility(View.GONE);
+    }
+
+    private void promoteSwipePreviewSurfaceToCurrent(ExoPlayer promotedPlayer) {
+        if (root == null || pageLayer == null || swipePreviewPage == null || swipePreviewPlayerView == null || promotedPlayer == null) {
+            return;
+        }
+        currentSurfacePage = swipePreviewPage;
+        currentSurfacePlayerView = swipePreviewPlayerView;
+        currentSurfacePlayer = promotedPlayer;
+        currentSurfacePage.animate().cancel();
+        currentSurfacePage.setVisibility(View.VISIBLE);
+        currentSurfacePage.setAlpha(1f);
+        currentSurfacePage.setTranslationY(0f);
+        currentSurfacePlayerView.setVisibility(View.VISIBLE);
+        hideSwipePreviewChromeOnly();
+
+        if (playerView != null) {
+            playerView.setVisibility(View.GONE);
+        }
+        pageLayer.setBackgroundColor(Color.TRANSPARENT);
+
+        installSpareSwipePreviewPage();
+        root.post(this::applyResponsivePortraitLayout);
+        uiHandler.post(this::prepareSpareSwipePreviewPage);
+    }
+
+    private void clearCurrentSurfaceHostForPlayer(ExoPlayer outgoingPlayer) {
+        if (currentSurfacePage == null || currentSurfacePlayer != outgoingPlayer) return;
+        FrameLayout retiredPage = currentSurfacePage;
+        PlayerView retiredPlayerView = currentSurfacePlayerView;
+        retiredPage.setVisibility(View.GONE);
+        currentSurfacePage = null;
+        currentSurfacePlayerView = null;
+        currentSurfacePlayer = null;
+        uiHandler.postDelayed(() -> {
+            if (retiredPlayerView != null) {
+                retiredPlayerView.setPlayer(null);
+            }
+            if (root != null && retiredPage.getParent() == root) {
+                root.removeView(retiredPage);
+            }
+        }, 700);
+        if (playerView != null) {
+            playerView.setVisibility(View.VISIBLE);
+        }
+        pageLayer.setBackgroundColor(Color.BLACK);
+    }
+
+    private void ensureMainPlayerSurfaceVisible() {
+        if (currentSurfacePage != null) return;
+        if (playerView != null) {
+            playerView.setVisibility(View.VISIBLE);
+        }
+        if (pageLayer != null) pageLayer.setBackgroundColor(Color.BLACK);
+    }
+
+    private PlayerView activePlayerView() {
+        return currentSurfacePlayerView != null ? currentSurfacePlayerView : playerView;
+    }
+
+    private PreviewRefs captureSwipePreviewRefs() {
+        PreviewRefs refs = new PreviewRefs();
+        refs.page = swipePreviewPage;
+        refs.playerView = swipePreviewPlayerView;
+        refs.imageView = swipePreviewView;
+        refs.item = swipePreviewItem;
+        refs.videoKey = swipePreviewVideoKey;
+        refs.topShade = swipePreviewTopShade;
+        refs.rightShade = swipePreviewRightShade;
+        refs.topBar = swipePreviewTopBar;
+        refs.watching = swipePreviewWatching;
+        refs.peopleIcon = swipePreviewPeopleIcon;
+        refs.backButton = swipePreviewBackButton;
+        refs.searchButton = swipePreviewSearchButton;
+        refs.menuButton = swipePreviewMenuButton;
+        refs.bottomShade = swipePreviewBottomShade;
+        refs.bottomInfo = swipePreviewBottomInfo;
+        refs.ownerGroup = swipePreviewOwnerGroup;
+        refs.ownerTexts = swipePreviewOwnerTexts;
+        refs.followButton = swipePreviewFollowButton;
+        refs.inputRow = swipePreviewInputRow;
+        refs.danmakuInputPill = swipePreviewDanmakuInputPill;
+        refs.danmakuInputDivider = swipePreviewDanmakuInputDivider;
+        refs.danmakuButton = swipePreviewDanmakuButton;
+        refs.avatar = swipePreviewAvatar;
+        refs.owner = swipePreviewOwner;
+        refs.fans = swipePreviewFans;
+        refs.title = swipePreviewTitle;
+        refs.meta = swipePreviewMeta;
+        refs.search = swipePreviewSearch;
+        refs.detailPageButton = swipePreviewDetailPageButton;
+        refs.rail = swipePreviewRail;
+        refs.danmaku = swipePreviewDanmaku;
+        refs.notice = swipePreviewNotice;
+        refs.progressBar = swipePreviewProgressBar;
+        refs.progressFill = swipePreviewProgressFill;
+        refs.progressThumb = swipePreviewProgressThumb;
+        refs.fullscreenButton = swipePreviewFullscreenButton;
+        refs.likeButton = swipePreviewLikeButton;
+        refs.commentButton = swipePreviewCommentButton;
+        refs.coinButton = swipePreviewCoinButton;
+        refs.favoriteButton = swipePreviewFavoriteButton;
+        refs.shareButton = swipePreviewShareButton;
+        return refs;
+    }
+
+    private void applySwipePreviewRefs(PreviewRefs refs) {
+        if (refs == null) return;
+        swipePreviewPage = refs.page;
+        swipePreviewPlayerView = refs.playerView;
+        swipePreviewView = refs.imageView;
+        swipePreviewItem = refs.item;
+        swipePreviewVideoKey = refs.videoKey == null ? "" : refs.videoKey;
+        swipePreviewTopShade = refs.topShade;
+        swipePreviewRightShade = refs.rightShade;
+        swipePreviewTopBar = refs.topBar;
+        swipePreviewWatching = refs.watching;
+        swipePreviewPeopleIcon = refs.peopleIcon;
+        swipePreviewBackButton = refs.backButton;
+        swipePreviewSearchButton = refs.searchButton;
+        swipePreviewMenuButton = refs.menuButton;
+        swipePreviewBottomShade = refs.bottomShade;
+        swipePreviewBottomInfo = refs.bottomInfo;
+        swipePreviewOwnerGroup = refs.ownerGroup;
+        swipePreviewOwnerTexts = refs.ownerTexts;
+        swipePreviewFollowButton = refs.followButton;
+        swipePreviewInputRow = refs.inputRow;
+        swipePreviewDanmakuInputPill = refs.danmakuInputPill;
+        swipePreviewDanmakuInputDivider = refs.danmakuInputDivider;
+        swipePreviewDanmakuButton = refs.danmakuButton;
+        swipePreviewAvatar = refs.avatar;
+        swipePreviewOwner = refs.owner;
+        swipePreviewFans = refs.fans;
+        swipePreviewTitle = refs.title;
+        swipePreviewMeta = refs.meta;
+        swipePreviewSearch = refs.search;
+        swipePreviewDetailPageButton = refs.detailPageButton;
+        swipePreviewRail = refs.rail;
+        swipePreviewDanmaku = refs.danmaku;
+        swipePreviewNotice = refs.notice;
+        swipePreviewProgressBar = refs.progressBar;
+        swipePreviewProgressFill = refs.progressFill;
+        swipePreviewProgressThumb = refs.progressThumb;
+        swipePreviewFullscreenButton = refs.fullscreenButton;
+        swipePreviewLikeButton = refs.likeButton;
+        swipePreviewCommentButton = refs.commentButton;
+        swipePreviewCoinButton = refs.coinButton;
+        swipePreviewFavoriteButton = refs.favoriteButton;
+        swipePreviewShareButton = refs.shareButton;
+    }
+
+    private void prepareSpareSwipePreviewPage() {
+        if (root == null || pageLayer == null || spareSwipePreviewRefs != null) return;
+        PreviewRefs activeRefs = captureSwipePreviewRefs();
+        FrameLayout sparePage = buildSwipePreviewPage();
+        sparePage.setVisibility(View.GONE);
+        PreviewRefs spareRefs = captureSwipePreviewRefs();
+        spareRefs.page = sparePage;
+        spareRefs.item = null;
+        spareRefs.videoKey = "";
+        applySwipePreviewRefs(activeRefs);
+        int pageIndex = root.indexOfChild(pageLayer);
+        root.addView(sparePage, Math.max(0, pageIndex), new FrameLayout.LayoutParams(-1, -1));
+        spareSwipePreviewRefs = spareRefs;
+        applyResponsivePortraitLayout();
+    }
+
+    private void installSpareSwipePreviewPage() {
+        if (spareSwipePreviewRefs != null) {
+            PreviewRefs refs = spareSwipePreviewRefs;
+            spareSwipePreviewRefs = null;
+            refs.item = null;
+            refs.videoKey = "";
+            applySwipePreviewRefs(refs);
+            if (swipePreviewPage != null) {
+                swipePreviewPage.setVisibility(View.GONE);
+                swipePreviewPage.setTranslationY(0f);
+                swipePreviewPage.setAlpha(1f);
+            }
+            return;
+        }
+        swipePreviewPage = buildSwipePreviewPage();
+        swipePreviewPage.setVisibility(View.GONE);
+        swipePreviewItem = null;
+        swipePreviewVideoKey = "";
+        int pageIndex = root.indexOfChild(pageLayer);
+        root.addView(swipePreviewPage, Math.max(0, pageIndex), new FrameLayout.LayoutParams(-1, -1));
+    }
+
     private void setSwipeChromeTranslation(float translationY) {
         pageLayer.setTranslationY(translationY);
     }
@@ -1602,6 +1806,9 @@ public final class MainActivity extends Activity {
         if (landscapeMode) return;
 
         applyVideoResizeMode();
+        if (currentSurfacePlayerView != null) {
+            applyVideoViewportLayout(currentSurfacePlayerView, currentItem);
+        }
         applyVideoViewportLayout(swipePreviewView, swipePreviewItem);
         applyVideoViewportLayout(swipePreviewPlayerView, swipePreviewItem);
 
@@ -2612,13 +2819,19 @@ public final class MainActivity extends Activity {
         landscapeMode = false;
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         applySystemBarsForMode();
-        setOverlayVisibility(true);
-        updateItemViews(video.item, video.playInfo);
-        long afterUiMs = SystemClock.uptimeMillis();
-
         boolean useWarmPlayer = warmPlayer != null && warmVideo == video;
         boolean useBackPlayer = backPlayer != null && backVideo == video;
         boolean warmWasReady = useWarmPlayer && warmPlayerReady;
+        boolean warmAttachedToPreviewBeforePlay = useWarmPlayer
+                && swipePreviewPlayerView != null
+                && swipePreviewPlayerView.getPlayer() == warmPlayer;
+        boolean deferItemViewUpdate = keepSwipePreview && warmAttachedToPreviewBeforePlay;
+        setOverlayVisibility(true);
+        if (!deferItemViewUpdate) {
+            updateItemViews(video.item, video.playInfo);
+        }
+        long afterUiMs = SystemClock.uptimeMillis();
+
         long beforeAttachMs = SystemClock.uptimeMillis();
         long afterAttachMs;
         long afterPrepareMs;
@@ -2633,10 +2846,11 @@ public final class MainActivity extends Activity {
             boolean warmAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (warmAttachedToPreview) {
-                PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
-                swipePreviewPlayerView.setVisibility(View.VISIBLE);
-                swipePreviewView.setVisibility(View.GONE);
+                clearCurrentSurfaceHostForPlayer(oldPlayer);
+                promoteSwipePreviewSurfaceToCurrent(player);
             } else {
+                clearCurrentSurfaceHostForPlayer(oldPlayer);
+                ensureMainPlayerSurfaceVisible();
                 playerView.setPlayer(player);
             }
             if (oldPlayer != null) {
@@ -2654,10 +2868,13 @@ public final class MainActivity extends Activity {
             boolean backAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (backAttachedToPreview) {
+                clearCurrentSurfaceHostForPlayer(oldPlayer);
                 PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
                 swipePreviewPlayerView.setVisibility(View.VISIBLE);
                 swipePreviewView.setVisibility(View.GONE);
             } else {
+                clearCurrentSurfaceHostForPlayer(oldPlayer);
+                ensureMainPlayerSurfaceVisible();
                 playerView.setPlayer(player);
             }
             keepWarmPlayer(oldPlayer, outgoingVideo);
@@ -2666,6 +2883,8 @@ public final class MainActivity extends Activity {
             afterAttachMs = SystemClock.uptimeMillis();
             afterPrepareMs = afterAttachMs;
         } else {
+            clearCurrentSurfaceHostForPlayer(player);
+            ensureMainPlayerSurfaceVisible();
             releaseWarmPlayer();
             MediaSource source = buildMediaSource(video);
             afterAttachMs = SystemClock.uptimeMillis();
@@ -2697,6 +2916,14 @@ public final class MainActivity extends Activity {
             loadComments(false);
         } else {
             invalidateCommentStateForNewVideo();
+        }
+        if (deferItemViewUpdate) {
+            String updateKey = videoIdentity(video.item);
+            uiHandler.post(() -> {
+                if (currentItem != null && updateKey.equals(videoIdentity(currentItem))) {
+                    updateItemViews(video.item, video.playInfo);
+                }
+            });
         }
         String danmakuVideoKey = videoIdentity(video.item);
         uiHandler.postDelayed(() -> {
@@ -3975,20 +4202,21 @@ public final class MainActivity extends Activity {
     }
 
     private void applyVideoResizeMode() {
-        if (playerView == null) return;
+        PlayerView target = activePlayerView();
+        if (target == null) return;
         if (landscapeMode) {
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) playerView.getLayoutParams();
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
             params.width = ViewGroup.LayoutParams.MATCH_PARENT;
             params.height = ViewGroup.LayoutParams.MATCH_PARENT;
             params.leftMargin = 0;
             params.topMargin = 0;
             params.gravity = Gravity.NO_GRAVITY;
-            playerView.setLayoutParams(params);
-            playerView.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
+            target.setLayoutParams(params);
+            target.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
             return;
         }
         if (commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE) return;
-        applyVideoViewportLayout(playerView, currentItem);
+        applyVideoViewportLayout(target, currentItem);
     }
 
     private void applyVideoViewportLayout(View target, FeedItem item) {
@@ -4008,8 +4236,8 @@ public final class MainActivity extends Activity {
             params.height = Math.max(1, bottom - top);
         }
         target.setLayoutParams(params);
-        if (target == playerView) {
-            playerView.setResizeMode(horizontal
+        if (target instanceof PlayerView) {
+            ((PlayerView) target).setResizeMode(horizontal
                     ? androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                     : androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM);
         } else if (target instanceof ImageView) {
@@ -4046,8 +4274,9 @@ public final class MainActivity extends Activity {
         if (commentsPanel == null) return;
         if (commentsPanelAnimator != null) commentsPanelAnimator.cancel();
         int resizeMode = commentsVideoResizeMode();
-        if (playerView != null) playerView.setResizeMode(resizeMode);
-        if (playerView != null) playerView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        PlayerView activePlayer = activePlayerView();
+        if (activePlayer != null) activePlayer.setResizeMode(resizeMode);
+        if (activePlayer != null) activePlayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         commentsPanel.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         int finalPanelTop = Math.max(1, rootHeight() - panelHeight);
         Rect compactFrame = commentsVideoFrameForPanelTop(finalPanelTop);
@@ -4062,9 +4291,9 @@ public final class MainActivity extends Activity {
         float horizontalTargetTranslation = closing
                 ? normalFrame.top - compactFrame.top
                 : compactFrame.top - normalFrame.top;
-        if (horizontalMotionOnly && playerView != null) {
+        if (horizontalMotionOnly && activePlayer != null) {
             applyPlayerFrame(horizontalBaseFrame, resizeMode);
-            playerView.setTranslationY(0f);
+            activePlayer.setTranslationY(0f);
         }
         commentsPanelAnimator = ValueAnimator.ofFloat(fromTranslation, toTranslation);
         commentsPanelAnimator.setDuration(durationMs);
@@ -4073,8 +4302,9 @@ public final class MainActivity extends Activity {
             float translation = (Float) animation.getAnimatedValue();
             commentsPanel.setTranslationY(translation);
             float fraction = animation.getAnimatedFraction();
-            if (horizontalMotionOnly && playerView != null) {
-                playerView.setTranslationY(horizontalTargetTranslation * fraction);
+            PlayerView framePlayer = activePlayerView();
+            if (horizontalMotionOnly && framePlayer != null) {
+                framePlayer.setTranslationY(horizontalTargetTranslation * fraction);
             } else {
                 Rect frame = commentsTransitionFrame(
                         compactFrame,
@@ -4097,11 +4327,12 @@ public final class MainActivity extends Activity {
                 boolean current = commentsPanelAnimator == animation;
                 if (current) commentsPanelAnimator = null;
                 if (current) {
-                    if (horizontalMotionOnly && playerView != null) {
-                        playerView.setTranslationY(0f);
+                    PlayerView framePlayer = activePlayerView();
+                    if (horizontalMotionOnly && framePlayer != null) {
+                        framePlayer.setTranslationY(0f);
                         applyPlayerFrame(closing ? normalFrame : compactFrame, resizeMode);
                     }
-                    if (playerView != null) playerView.setLayerType(View.LAYER_TYPE_NONE, null);
+                    if (framePlayer != null) framePlayer.setLayerType(View.LAYER_TYPE_NONE, null);
                     commentsPanel.setLayerType(View.LAYER_TYPE_NONE, null);
                 }
                 if (!canceled && current && endAction != null) endAction.run();
@@ -4111,8 +4342,9 @@ public final class MainActivity extends Activity {
             public void onAnimationCancel(android.animation.Animator animation) {
                 canceled = true;
                 if (commentsPanelAnimator == animation) commentsPanelAnimator = null;
-                if (playerView != null) playerView.setTranslationY(0f);
-                if (playerView != null) playerView.setLayerType(View.LAYER_TYPE_NONE, null);
+                PlayerView framePlayer = activePlayerView();
+                if (framePlayer != null) framePlayer.setTranslationY(0f);
+                if (framePlayer != null) framePlayer.setLayerType(View.LAYER_TYPE_NONE, null);
                 commentsPanel.setLayerType(View.LAYER_TYPE_NONE, null);
             }
         });
@@ -4149,7 +4381,9 @@ public final class MainActivity extends Activity {
     }
 
     private Rect currentPlayerFrame() {
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) playerView.getLayoutParams();
+        PlayerView target = activePlayerView();
+        if (target == null) return portraitVideoFrame();
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
         int width = params.width == ViewGroup.LayoutParams.MATCH_PARENT ? rootWidth() : Math.max(1, params.width);
         int height = params.height == ViewGroup.LayoutParams.MATCH_PARENT ? rootHeight() : Math.max(1, params.height);
         return new Rect(Math.max(0, params.leftMargin), Math.max(0, params.topMargin),
@@ -4169,19 +4403,21 @@ public final class MainActivity extends Activity {
     }
 
     private void applyPlayerFrame(Rect frame, int resizeMode) {
-        if (playerView == null || frame == null) return;
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) playerView.getLayoutParams();
+        PlayerView target = activePlayerView();
+        if (target == null || frame == null) return;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
         params.width = Math.max(1, frame.width());
         params.height = Math.max(1, frame.height());
         params.leftMargin = frame.left;
         params.topMargin = frame.top;
         params.gravity = Gravity.NO_GRAVITY;
-        playerView.setLayoutParams(params);
-        playerView.setResizeMode(resizeMode);
+        target.setLayoutParams(params);
+        target.setResizeMode(resizeMode);
     }
 
     private void animatePlayerFrame(Rect target, int resizeMode, long durationMs) {
-        if (playerView == null || target == null) return;
+        PlayerView active = activePlayerView();
+        if (active == null || target == null) return;
         if (videoViewportAnimator != null) videoViewportAnimator.cancel();
         Rect start = currentPlayerFrame();
         playerView.setResizeMode(resizeMode);
@@ -9726,6 +9962,50 @@ public final class MainActivity extends Activity {
             this.textSp = textSp;
             this.videoTimeMs = videoTimeMs;
         }
+    }
+
+    private static final class PreviewRefs {
+        FrameLayout page;
+        PlayerView playerView;
+        ImageView imageView;
+        FeedItem item;
+        String videoKey = "";
+        View topShade;
+        View rightShade;
+        FrameLayout topBar;
+        TextView watching;
+        ImageView peopleIcon;
+        TextView backButton;
+        ImageView searchButton;
+        ImageView menuButton;
+        View bottomShade;
+        FrameLayout bottomInfo;
+        FrameLayout ownerGroup;
+        LinearLayout ownerTexts;
+        TextView followButton;
+        FrameLayout inputRow;
+        TextView danmakuInputPill;
+        View danmakuInputDivider;
+        ImageView danmakuButton;
+        ImageView avatar;
+        TextView owner;
+        TextView fans;
+        TextView title;
+        TextView meta;
+        TextView search;
+        FrameLayout detailPageButton;
+        LinearLayout rail;
+        LinearLayout danmaku;
+        TextView notice;
+        FrameLayout progressBar;
+        View progressFill;
+        SeekTvThumbView progressThumb;
+        DisplayModeIconButton fullscreenButton;
+        RailActionButton likeButton;
+        RailActionButton commentButton;
+        RailActionButton coinButton;
+        RailActionButton favoriteButton;
+        RailActionButton shareButton;
     }
 
     private int dp(int value) {
