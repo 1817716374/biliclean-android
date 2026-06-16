@@ -2613,7 +2613,7 @@ public final class MainActivity extends Activity {
             view.getParent().requestDisallowInterceptTouchEvent(true);
             return false;
         });
-        panel.setPadding(dp(14), dp(8), dp(14), dp(8));
+        panel.setPadding(dp(14), dp(6), dp(14), dp(8));
         panel.setBackground(topRounded(0xFFFFFFFF, dp(18)));
 
         View handle = new View(this);
@@ -2627,14 +2627,14 @@ public final class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, dp(10), 0, dp(4));
+        header.setPadding(dp(12), 0, 0, 0);
         header.setOnTouchListener((view, event) -> handleCommentsDrag(event));
         TextView intro = text("简介", 18, 0xFF9A9EA6, Typeface.BOLD);
         intro.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(intro, new LinearLayout.LayoutParams(dp(70), dp(40)));
+        header.addView(intro, new LinearLayout.LayoutParams(dp(52), dp(34)));
         commentTitleView = text("评论（0）", 19, 0xFF171A1F, Typeface.BOLD);
         commentTitleView.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(commentTitleView, new LinearLayout.LayoutParams(0, dp(40), 1));
+        header.addView(commentTitleView, new LinearLayout.LayoutParams(0, dp(34), 1));
         commentExpandButton = iconImage(R.drawable.ic_bili_expand, "expand comments");
         commentExpandButton.setBackground(rounded(0xFFF1F2F4, dp(21)));
         commentExpandButton.setContentDescription("展开/收起评论");
@@ -2643,24 +2643,24 @@ public final class MainActivity extends Activity {
             updateCommentExpandIcon();
             animateCommentsPanelHeight(commentsExpanded ? commentsFullHeight() : commentsHalfHeight());
         });
-        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(42), dp(42));
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(40), dp(40));
         closeParams.rightMargin = dp(2);
         header.addView(commentExpandButton, closeParams);
         panel.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         View activeTab = new View(this);
         activeTab.setBackground(rounded(BILI_PINK, dp(2)));
-        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(dp(34), dp(4));
-        activeParams.leftMargin = dp(118);
-        activeParams.bottomMargin = dp(13);
+        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(dp(22), dp(4));
+        activeParams.leftMargin = dp(102);
+        activeParams.bottomMargin = dp(4);
         panel.addView(activeTab, activeParams);
 
         commentSubHeader = new LinearLayout(this);
         commentSubHeader.setGravity(Gravity.CENTER_VERTICAL);
-        commentSubHeader.setPadding(0, 0, 0, dp(8));
+        commentSubHeader.setPadding(0, 0, 0, 0);
         commentSectionTitleView = text("热门评论", 15, 0xFF8E9299, Typeface.NORMAL);
         commentSectionTitleView.setGravity(Gravity.CENTER_VERTICAL);
-        commentSubHeader.addView(commentSectionTitleView, new LinearLayout.LayoutParams(0, dp(34), 1));
+        commentSubHeader.addView(commentSectionTitleView, new LinearLayout.LayoutParams(0, dp(30), 1));
         commentSortView = text("☰ 按热度", 15, 0xFF8E9299, Typeface.NORMAL);
         commentSortView.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         commentSortView.setOnClickListener(v -> {
@@ -2669,7 +2669,7 @@ public final class MainActivity extends Activity {
             updateCommentSortLabel();
             loadComments(true);
         });
-        commentSubHeader.addView(commentSortView, new LinearLayout.LayoutParams(dp(120), dp(34)));
+        commentSubHeader.addView(commentSortView, new LinearLayout.LayoutParams(dp(120), dp(30)));
         panel.addView(commentSubHeader, new LinearLayout.LayoutParams(-1, -2));
 
         commentsContentFrame = new FrameLayout(this);
@@ -2694,7 +2694,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(8), 0, dp(2));
+        inputRow.setPadding(0, dp(6), 0, dp(2));
         commentInput = new EditText(this);
         commentInput.setSingleLine(false);
         commentInput.setMaxLines(3);
@@ -4233,7 +4233,7 @@ public final class MainActivity extends Activity {
         int height = commentsPanel.getLayoutParams() == null
                 ? commentsHalfHeight()
                 : Math.max(1, commentsPanel.getLayoutParams().height);
-        int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - height);
+        int finalPanelTop = commentsPanelTopForHeight(height);
         boolean horizontalInPortrait = isHorizontalVideoInPortrait();
         Rect currentFrame = currentPlayerFrame();
         int startPanelTop = Math.max(finalPanelTop, Math.min(contentBottom(), currentFrame.bottom));
@@ -4259,7 +4259,7 @@ public final class MainActivity extends Activity {
             int height = commentsPanel.getLayoutParams() == null
                     ? commentsPanel.getHeight()
                     : Math.max(1, commentsPanel.getLayoutParams().height);
-            int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - height);
+            int finalPanelTop = commentsPanelTopForHeight(height);
             float startTranslation = commentsPanel.getTranslationY();
             float endTranslation = isHorizontalVideoInPortrait()
                     ? height
@@ -4379,13 +4379,13 @@ public final class MainActivity extends Activity {
     }
 
     private Rect commentsVideoFrame(int panelHeight) {
-        return commentsVideoFrameForPanelTop(Math.max(contentTop() + 1, contentBottom() - panelHeight));
+        return commentsVideoFrameForPanelTop(commentsPanelTopForHeight(panelHeight));
     }
 
     private Rect commentsVideoFrameForPanelTop(int panelTop) {
         int rw = rootWidth();
         int leftEdge = contentLeft();
-        panelTop = Math.max(contentTop() + 1, Math.min(contentBottom(), panelTop));
+        panelTop = Math.max(contentTop() + 1, Math.min(rawRootHeight(), panelTop));
         boolean horizontal = currentItem != null && currentItem.isHorizontal();
         float aspect = currentItem != null && currentItem.width > 0 && currentItem.height > 0
                 ? currentItem.width / (float) currentItem.height
@@ -4411,7 +4411,7 @@ public final class MainActivity extends Activity {
         if (activePlayer != null) activePlayer.setResizeMode(resizeMode);
         if (activePlayer != null) activePlayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         commentsPanel.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - panelHeight);
+        int finalPanelTop = commentsPanelTopForHeight(panelHeight);
         Rect compactFrame = commentsVideoFrameForPanelTop(finalPanelTop);
         Rect normalFrame = portraitVideoFrame();
         float normalTranslation = Math.max(0f, normalFrame.bottom - finalPanelTop);
@@ -4618,7 +4618,11 @@ public final class MainActivity extends Activity {
     }
 
     private int commentsRootHeight() {
-        return rootHeight();
+        return Math.max(1, rawRootHeight() - contentTop());
+    }
+
+    private int commentsPanelTopForHeight(int height) {
+        return Math.max(contentTop() + 1, rawRootHeight() - Math.max(1, height));
     }
 
     private int commentsHalfHeight() {
@@ -4639,7 +4643,7 @@ public final class MainActivity extends Activity {
         if (params instanceof FrameLayout.LayoutParams) {
             FrameLayout.LayoutParams frameParams = (FrameLayout.LayoutParams) params;
             frameParams.gravity = Gravity.BOTTOM;
-            frameParams.bottomMargin = landscapeMode ? 0 : Math.max(0, systemInsetBottom);
+            frameParams.bottomMargin = 0;
         }
         if (params.height != safeHeight) {
             params.height = safeHeight;
@@ -4655,6 +4659,8 @@ public final class MainActivity extends Activity {
 
     private void relayoutCommentsPanelForInsets() {
         if (commentsPanel == null) return;
+        int safeBottom = landscapeMode ? 0 : Math.max(0, systemInsetBottom);
+        commentsPanel.setPadding(dp(14), dp(6), dp(14), dp(8) + safeBottom);
         int height = commentsPanel.getLayoutParams() == null
                 ? commentsHalfHeight()
                 : commentsPanel.getLayoutParams().height;
@@ -4860,9 +4866,9 @@ public final class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(child ? Math.round(rootWidth() * 0.116f) : 0,
-                child ? Math.round(rootWidth() * 0.018f) : Math.round(rootWidth() * 0.033f),
+                child ? Math.round(rootWidth() * 0.014f) : Math.round(rootWidth() * 0.026f),
                 0,
-                child ? Math.round(rootWidth() * 0.020f) : Math.round(rootWidth() * 0.031f));
+                child ? Math.round(rootWidth() * 0.018f) : Math.round(rootWidth() * 0.026f));
 
         int avatarSize = Math.max(1, Math.round(rootWidth() * (child ? 0.058f : 0.078f)));
         FrameLayout avatarBox = new FrameLayout(this);
@@ -4898,7 +4904,8 @@ public final class MainActivity extends Activity {
         nameRow.setGravity(Gravity.CENTER_VERTICAL);
         nameRow.setOrientation(LinearLayout.HORIZONTAL);
 
-        TextView name = text(fallback(comment.user, "匿名用户"), 14, upComment ? BILI_PINK : 0xFF8B9098, Typeface.NORMAL);
+        int nameColor = (upComment || comment.vip) ? BILI_PINK : 0xFF8B9098;
+        TextView name = text(fallback(comment.user, "匿名用户"), 14, nameColor, Typeface.NORMAL);
         name.setSingleLine(true);
         name.setEllipsize(TextUtils.TruncateAt.END);
         name.setMaxWidth(Math.max(1, Math.round(rootWidth() * (child ? 0.48f : 0.56f))));
@@ -4928,8 +4935,8 @@ public final class MainActivity extends Activity {
 
         TextView message = text("", child ? 14 : 17, 0xFF24262B, Typeface.NORMAL);
         renderCommentText(message, comment);
-        message.setLineSpacing(dp(1), 1.08f);
-        message.setPadding(0, dp(7), 0, 0);
+        message.setLineSpacing(dp(1), 1.04f);
+        message.setPadding(0, dp(5), 0, 0);
         body.addView(message, new LinearLayout.LayoutParams(-1, -2));
 
         if (!comment.pictureUrls.isEmpty()) {
@@ -4940,7 +4947,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout meta = new LinearLayout(this);
         meta.setGravity(Gravity.CENTER_VERTICAL);
-        meta.setPadding(0, dp(8), 0, 0);
+        meta.setPadding(0, dp(6), 0, 0);
         TextView left = text(comment.ctimeText + locationText(comment.location) + "  回复", 13, 0xFFA7ABB2, Typeface.NORMAL);
         meta.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
         meta.addView(buildCommentActionStrip(comment), new LinearLayout.LayoutParams(commentActionStripWidth(), commentActionStripHeight()));
@@ -4949,8 +4956,8 @@ public final class MainActivity extends Activity {
         LinearLayout repliesBox = new LinearLayout(this);
         repliesBox.setOrientation(LinearLayout.VERTICAL);
         if (allowReplies && !child && (!comment.previewReplies.isEmpty() || comment.replyCount > 0)) {
-            repliesBox.setPadding(dp(12), dp(10), dp(12), dp(10));
-            repliesBox.setBackground(rounded(0xFFF2F3F5, dp(10)));
+            repliesBox.setPadding(dp(12), dp(9), dp(12), dp(9));
+            repliesBox.setBackground(rounded(0xFFF3F4F6, dp(9)));
             repliesBox.setClickable(true);
             repliesBox.setOnClickListener(v -> showCommentDetail(comment));
             for (CommentItem reply : comment.previewReplies) {
@@ -4958,11 +4965,11 @@ public final class MainActivity extends Activity {
                 repliesBox.addView(preview, new LinearLayout.LayoutParams(-1, -2));
             }
             TextView expand = text("共" + comment.replyCount + "条回复  ›", 14, 0xFF3B83A6, Typeface.BOLD);
-            expand.setPadding(0, dp(8), 0, 0);
+            expand.setPadding(0, dp(6), 0, 0);
             expand.setOnClickListener(v -> showCommentDetail(comment));
             repliesBox.addView(expand, new LinearLayout.LayoutParams(-1, -2));
             LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, -2);
-            boxParams.topMargin = dp(10);
+            boxParams.topMargin = dp(8);
             body.addView(repliesBox, boxParams);
         }
 
