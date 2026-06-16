@@ -553,6 +553,8 @@ public final class MainActivity extends Activity {
 
         playerView = (PlayerView) getLayoutInflater().inflate(R.layout.player_view_texture, pageLayer, false);
         playerView.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM);
+        playerView.setKeepContentOnPlayerReset(true);
+        playerView.setShutterBackgroundColor(Color.TRANSPARENT);
         pageLayer.addView(playerView, new FrameLayout.LayoutParams(-1, -1));
 
         videoTouchLayer = new View(this);
@@ -701,6 +703,8 @@ public final class MainActivity extends Activity {
 
         swipePreviewPlayerView = (PlayerView) getLayoutInflater().inflate(R.layout.player_view_texture, page, false);
         swipePreviewPlayerView.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM);
+        swipePreviewPlayerView.setKeepContentOnPlayerReset(true);
+        swipePreviewPlayerView.setShutterBackgroundColor(Color.TRANSPARENT);
         swipePreviewPlayerView.setVisibility(View.GONE);
         page.addView(swipePreviewPlayerView, new FrameLayout.LayoutParams(-1, -1));
 
@@ -1134,12 +1138,12 @@ public final class MainActivity extends Activity {
     private void finishSwipe(float dy, float velocityY) {
         float distanceThreshold = Math.max(dp(84), root.getHeight() * 0.14f);
         boolean shouldSwitch = Math.abs(dy) >= distanceThreshold || Math.abs(velocityY) > SWIPE_SWITCH_VELOCITY_THRESHOLD;
+        boolean forward = dy < 0 || (Math.abs(dy) < dp(8) && velocityY < 0);
         if (!shouldSwitch) {
-            PrefetchedVideo previewVideo = dy < 0 ? peekForwardPreview() : null;
+            PrefetchedVideo previewVideo = forward ? peekForwardPreview() : null;
             animateSwipeBack(220, () -> resetWarmPreviewPlayback(previewVideo));
             return;
         }
-        boolean forward = dy < 0;
         if (forward && !canRenderForwardPreview()) {
             animateSwipeBack(220, () -> resetWarmPreviewPlayback(peekForwardPreview()));
             return;
@@ -3560,9 +3564,10 @@ public final class MainActivity extends Activity {
                 ? commentsHalfHeight()
                 : Math.max(1, commentsPanel.getLayoutParams().height);
         int finalPanelTop = Math.max(1, rootHeight() - height);
+        boolean horizontalInPortrait = isHorizontalVideoInPortrait();
         Rect currentFrame = currentPlayerFrame();
         int startPanelTop = Math.max(finalPanelTop, Math.min(rootHeight(), currentFrame.bottom));
-        float startTranslation = Math.max(0f, startPanelTop - finalPanelTop);
+        float startTranslation = horizontalInPortrait ? height : Math.max(0f, startPanelTop - finalPanelTop);
         commentsPanel.setTranslationY(startTranslation);
         commentsPanel.setVisibility(View.VISIBLE);
         updateDanmakuChrome();
@@ -3586,7 +3591,9 @@ public final class MainActivity extends Activity {
                     : Math.max(1, commentsPanel.getLayoutParams().height);
             int finalPanelTop = Math.max(1, rootHeight() - height);
             float startTranslation = commentsPanel.getTranslationY();
-            float endTranslation = Math.max(0f, portraitVideoFrame().bottom - finalPanelTop);
+            float endTranslation = isHorizontalVideoInPortrait()
+                    ? height
+                    : Math.max(0f, portraitVideoFrame().bottom - finalPanelTop);
             animateCommentsPanelTo(startTranslation, endTranslation, height, 240, () -> {
                         commentsPanel.setVisibility(View.GONE);
                         commentsPanel.setTranslationY(0);
@@ -3651,6 +3658,10 @@ public final class MainActivity extends Activity {
         applyVideoResizeMode();
     }
 
+    private boolean isHorizontalVideoInPortrait() {
+        return currentItem != null && currentItem.isHorizontal() && !landscapeMode;
+    }
+
     private void applyVideoResizeMode() {
         if (playerView == null) return;
         if (landscapeMode) {
@@ -3708,9 +3719,13 @@ public final class MainActivity extends Activity {
                 ? currentItem.width / (float) currentItem.height
                 : (horizontal ? 16f / 9f : 9f / 16f);
         if (horizontal) {
-            int height = Math.min(panelTop, Math.max(1, Math.round(rw / Math.max(0.1f, aspect))));
-            int top = Math.max(0, panelTop - height);
-            return new Rect(0, top, rw, top + height);
+            int width = Math.max(1, Math.round(rw * 0.76f));
+            int height = Math.max(1, Math.round(width / Math.max(0.1f, aspect)));
+            int left = Math.max(0, (rw - width) / 2);
+            int normalTop = docY(24.57f);
+            int maxTop = Math.max(0, panelTop - dp(72) - height);
+            int top = Math.max(docY(12f), Math.min(normalTop, maxTop));
+            return new Rect(left, top, left + width, top + height);
         }
         int height = panelTop;
         int width = Math.min(rw, Math.max(1, Math.round(height * Math.max(0.1f, aspect))));
