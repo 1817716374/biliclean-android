@@ -1916,12 +1916,12 @@ public final class MainActivity extends Activity {
     private void applyTopBarLayout(FrameLayout bar, TextView back, View people,
                                    TextView watching, View search, View menu) {
         if (bar == null) return;
-        setFrame(bar, docFrame(0f, 4.95f, 100f, 4.82f));
-        setFrame(back, relativeDocFrame(2.60f, 4.95f, 8.39f, 4.82f, 0f, 4.95f));
-        setFrame(people, relativeDocFrame(14.18f, 6.35f, 4.15f, 2.33f, 0f, 4.95f));
-        setFrame(watching, relativeDocFrame(18.34f, 5.83f, 27.2f, 3.12f, 0f, 4.95f));
-        setFrame(search, relativeDocFrame(78.05f, 5.87f, 6.25f, 3.02f, 0f, 4.95f));
-        setFrame(menu, relativeDocFrame(91.05f, 6.49f, 5.20f, 2.05f, 0f, 4.95f));
+        setFrame(bar, docFrame(0f, 4.95f, 100f, 4.58f));
+        setFrame(back, relativeDocFrame(3.20f, 5.10f, 6.40f, 3.95f, 0f, 4.95f));
+        setFrame(people, relativeDocFrame(14.15f, 5.85f, 3.55f, 2.10f, 0f, 4.95f));
+        setFrame(watching, relativeDocFrame(18.05f, 5.52f, 28.8f, 2.80f, 0f, 4.95f));
+        setFrame(search, relativeDocFrame(78.85f, 5.45f, 5.90f, 2.95f, 0f, 4.95f));
+        setFrame(menu, relativeDocFrame(91.95f, 5.72f, 3.70f, 2.55f, 0f, 4.95f));
     }
 
     private void applyRailLayout(LinearLayout rail, RailActionButton like, RailActionButton comment,
@@ -1931,7 +1931,7 @@ public final class MainActivity extends Activity {
         rail.setTranslationY(0f);
         rail.setClipChildren(false);
         rail.setClipToPadding(false);
-        setFrame(rail, docFrame(87.70f, 45.38f, 8.97f, 40.76f));
+        setFrame(rail, docFrame(87.70f, 43.85f, 8.97f, 42.00f));
         int buttonHeight = docHeight(6.18f);
         int buttonGap = docHeight(2.38f);
         int iconSize = Math.min(docWidth(8.39f), docHeight(3.84f));
@@ -1991,16 +1991,16 @@ public final class MainActivity extends Activity {
         setFrame(title, docFrameWrapHeight(3.33f, 79.56f, 70.77f));
         setFrame(meta, docFrameWrapHeight(3.47f, 81.75f, 42.0f));
         setFrame(notice, docFrameWrapHeight(3.47f, 85.34f, 70.0f));
-        setFrame(search, effectiveDocFrame(3.37f, 87.22f, 81.00f, 3.75f));
+        setFrame(search, effectiveDocFrame(3.37f, 85.95f, 81.00f, 3.75f));
         if (search != null) {
             search.setTextSize(15);
             search.setPadding(docWidth(1.85f), 0, docWidth(3.37f), 0);
             search.setBackground(rounded(0xDD141517, Math.max(1, docWidth(1.95f))));
             applySearchEntranceIcon(search);
         }
-        setFrame(progress, effectiveDocFrame(3.33f, 92.02f, 93.20f, 1.05f));
+        setFrame(progress, effectiveDocFrame(3.33f, 91.46f, 93.20f, 1.05f));
         applyProgressTrackLayout(progress, fill);
-        setFrame(inputRow, effectiveDocFrame(3.37f, 94.29f, 65.36f, 4.17f));
+        setFrame(inputRow, effectiveDocFrame(3.37f, 93.62f, 65.36f, 4.17f));
         if (inputPill != null) {
             inputPill.setTextSize(14);
             inputPill.setPadding(docWidth(3.15f), 0, docWidth(9.5f), 0);
@@ -2024,7 +2024,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (detailButton != null) {
-            setFrame(detailButton, effectiveDocFrame(75.95f, 93.18f, 7.35f, 4.78f));
+            setFrame(detailButton, effectiveDocFrame(75.95f, 92.58f, 7.35f, 4.78f));
             if (detailButton.getChildCount() >= 2) {
                 View label = detailButton.getChildAt(0);
                 View icon = detailButton.getChildAt(1);
@@ -2186,6 +2186,7 @@ public final class MainActivity extends Activity {
 
         topBackButton = text("‹", 38, Color.WHITE, Typeface.NORMAL);
         topBackButton.setGravity(Gravity.CENTER);
+        topBackButton.setIncludeFontPadding(false);
         topBackButton.setContentDescription("返回");
         topBackButton.setOnClickListener(v -> finish());
         top.addView(topBackButton, new FrameLayout.LayoutParams(-2, -1));
@@ -7021,7 +7022,7 @@ public final class MainActivity extends Activity {
             title = "搜索·" + compactSearchText(searchSuggestText(item));
         }
         target.setVisibility(View.VISIBLE);
-        target.setText(title + "    ›");
+        target.setText(title);
         applySearchEntranceIcon(target);
         target.setClickable(clickable);
         if (clickable) target.setOnClickListener(v -> showSearchSuggestSheet());
@@ -8309,6 +8310,11 @@ public final class MainActivity extends Activity {
         if (lightProgressThumb != null) lightProgressThumb.setEyeDirection(target, animate);
     }
 
+    private boolean shouldDrawSeekTvFace(SeekTvThumbView thumb) {
+        return (thumb == progressThumb && progressDragging)
+                || (thumb == lightProgressThumb && landscapeProgressDragging);
+    }
+
     private void updateLightControlsPlaybackState() {
         if (player == null) return;
         if (lightPlayButton != null) {
@@ -8760,7 +8766,10 @@ public final class MainActivity extends Activity {
         Drawable icon = getResources().getDrawable(R.drawable.ic_bili_search_clean);
         int size = Math.max(1, Math.min(docWidth(4.7f), effectiveDocHeight(2.55f)));
         icon.setBounds(0, 0, size, size);
-        target.setCompoundDrawables(icon, null, null, null);
+        int arrowSize = Math.max(1, Math.min(docWidth(2.4f), effectiveDocHeight(1.7f)));
+        Drawable arrow = new SearchChevronDrawable(0xFFECEDEE, Math.max(1, docWidth(0.32f)));
+        arrow.setBounds(0, 0, arrowSize, arrowSize);
+        target.setCompoundDrawables(icon, null, arrow, null);
         target.setCompoundDrawablePadding(Math.max(1, docWidth(1.45f)));
     }
 
@@ -8800,6 +8809,50 @@ public final class MainActivity extends Activity {
         GradientDrawable drawable = rounded(fillColor, radius);
         drawable.setStroke(strokeWidth, strokeColor);
         return drawable;
+    }
+
+    private static final class SearchChevronDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int color;
+        private final float strokeWidth;
+
+        SearchChevronDrawable(int color, float strokeWidth) {
+            this.color = color;
+            this.strokeWidth = strokeWidth;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            float left = bounds.left + bounds.width() * 0.34f;
+            float right = bounds.left + bounds.width() * 0.70f;
+            float top = bounds.top + bounds.height() * 0.22f;
+            float middle = bounds.top + bounds.height() * 0.50f;
+            float bottom = bounds.top + bounds.height() * 0.78f;
+            paint.setColor(color);
+            paint.setAlpha(230);
+            paint.setStrokeWidth(strokeWidth);
+            canvas.drawLine(left, top, right, middle, paint);
+            canvas.drawLine(right, middle, left, bottom, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
     }
 
     private GradientDrawable topRounded(int color, int radius) {
@@ -9210,6 +9263,14 @@ public final class MainActivity extends Activity {
             canvas.save();
             canvas.translate(left, top);
             canvas.scale(scale, scale);
+
+            if (!shouldDrawSeekTvFace(this)) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.WHITE);
+                canvas.drawCircle(9f, 9f, 3.6f, paint);
+                canvas.restore();
+                return;
+            }
 
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0x24FF6699);
