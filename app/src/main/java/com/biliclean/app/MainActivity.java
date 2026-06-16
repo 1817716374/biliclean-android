@@ -136,11 +136,15 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private ExoPlayer player;
     private ExoPlayer warmPlayer;
+    private ExoPlayer warmAheadPlayer;
     private ExoPlayer backPlayer;
     private PrefetchedVideo backVideo;
     private boolean warmPlayerReady;
     private boolean warmPlayerRenderedFirstFrame;
+    private boolean warmAheadPlayerReady;
+    private boolean warmAheadPlayerRenderedFirstFrame;
     private long warmPrepareStartedMs;
+    private long warmAheadPrepareStartedMs;
     private SimpleCache mediaCache;
     private AudioManager audioManager;
     private PlayerView playerView;
@@ -282,6 +286,7 @@ public final class MainActivity extends Activity {
 
     private PrefetchedVideo currentVideo;
     private PrefetchedVideo warmVideo;
+    private PrefetchedVideo warmAheadVideo;
     private FeedItem currentItem;
     private PrefetchedVideo prefetchedVideo;
     private boolean prefetchRunning;
@@ -391,6 +396,7 @@ public final class MainActivity extends Activity {
     private boolean touchMovedBeyondTapSlop;
     private float touchDownX;
     private boolean waitingForSwitchFirstFrame;
+    private boolean consumeDanmakuUnfreezeTouch;
 
     private final Runnable releaseHeldSwipePreviewRunnable = new Runnable() {
         @Override
@@ -464,6 +470,7 @@ public final class MainActivity extends Activity {
             player = null;
         }
         releaseWarmPlayer();
+        releaseWarmAheadPlayer();
         releaseBackPlayer();
         if (mediaCache != null) {
             try {
@@ -543,7 +550,7 @@ public final class MainActivity extends Activity {
 
     private DefaultLoadControl shortBufferLoadControl() {
         return new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(2500, 9000, 700, 1500)
+                .setBufferDurationsMs(900, 4500, 250, 500)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build();
     }
@@ -924,6 +931,11 @@ public final class MainActivity extends Activity {
         if (switchAnimating) return true;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                if (selectedDanmakuSprite != null) {
+                    consumeDanmakuUnfreezeTouch = true;
+                    hideDanmakuActionBox();
+                    return true;
+                }
                 hideDanmakuActionBox();
                 recycleSwipeVelocityTracker();
                 swipeVelocityTracker = VelocityTracker.obtain();
@@ -1015,6 +1027,10 @@ public final class MainActivity extends Activity {
                 gestureDetector.onTouchEvent(event);
                 return true;
             case MotionEvent.ACTION_UP:
+                if (consumeDanmakuUnfreezeTouch) {
+                    consumeDanmakuUnfreezeTouch = false;
+                    return true;
+                }
                 if (swipeVelocityTracker != null) swipeVelocityTracker.addMovement(event);
                 float velocityY = currentSwipeVelocityY();
                 recycleSwipeVelocityTracker();
@@ -1050,6 +1066,7 @@ public final class MainActivity extends Activity {
                 swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
                 return true;
             case MotionEvent.ACTION_CANCEL:
+                consumeDanmakuUnfreezeTouch = false;
                 recycleSwipeVelocityTracker();
                 stopFastForward();
                 if (landscapeProgressDragging) {
@@ -1228,14 +1245,22 @@ public final class MainActivity extends Activity {
     }
 
     private boolean canRenderForwardPreview() {
-        return canRenderPreviewVideo(peekForwardPreview());
+        return canSwitchToPreviewVideo(peekForwardPreview());
+    }
+
+    private boolean canSwitchToPreviewVideo(PrefetchedVideo video) {
+        return video != null
+                && video.playInfo != null
+                && video.playInfo.playable
+                && video.playInfo.videoUrl != null
+                && !video.playInfo.videoUrl.isEmpty();
     }
 
     private boolean canRenderPreviewVideo(PrefetchedVideo video) {
         return video != null
                 && warmPlayer != null
                 && warmVideo == video
-                && warmPlayerRenderedFirstFrame;
+                && warmPlayerReady;
     }
 
     private void startWarmPreviewPlayback(PrefetchedVideo video) {
@@ -2578,10 +2603,9 @@ public final class MainActivity extends Activity {
             boolean warmAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (warmAttachedToPreview) {
-                boolean frozenPreviewFrame = freezeSwipePreviewVideoFrame(video.item);
                 PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
                 swipePreviewPlayerView.setVisibility(View.VISIBLE);
-                if (!frozenPreviewFrame) swipePreviewView.setVisibility(View.GONE);
+                swipePreviewView.setVisibility(View.GONE);
             } else {
                 playerView.setPlayer(player);
             }
@@ -2600,10 +2624,9 @@ public final class MainActivity extends Activity {
             boolean backAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (backAttachedToPreview) {
-                boolean frozenPreviewFrame = freezeSwipePreviewVideoFrame(video.item);
                 PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
                 swipePreviewPlayerView.setVisibility(View.VISIBLE);
-                if (!frozenPreviewFrame) swipePreviewView.setVisibility(View.GONE);
+                swipePreviewView.setVisibility(View.GONE);
             } else {
                 playerView.setPlayer(player);
             }
@@ -2630,10 +2653,10 @@ public final class MainActivity extends Activity {
         player.play();
         long afterPlayerMs = SystemClock.uptimeMillis();
         if (keepSwipePreview) {
-            waitingForSwitchFirstFrame = true;
+            waitingForSwitchFirstFrame = !((useWarmPlayer && warmWasReady) || useBackPlayer);
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
             uiHandler.postDelayed(releaseHeldSwipePreviewRunnable,
-                    (useWarmPlayer && warmWasReady) || useBackPlayer ? 520 : 1600);
+                    waitingForSwitchFirstFrame ? 900 : 90);
         } else {
             waitingForSwitchFirstFrame = false;
         }
@@ -2649,6 +2672,7 @@ public final class MainActivity extends Activity {
                 loadDanmaku();
             }
         }, 180);
+        promoteWarmAheadToWarmIfNext();
         prefetchNext();
         ensureWarmNextReady(currentPrefetchGeneration());
         android.util.Log.d("BiliClean", "switch timing bvid=" + currentItem.bvid
@@ -2770,16 +2794,13 @@ public final class MainActivity extends Activity {
 
     private PrefetchedVideo takeNextReady(long waitMs) {
         long deadlineMs = SystemClock.uptimeMillis() + Math.max(0L, waitMs);
-        boolean requireWarmReady = currentVideo != null;
         synchronized (prefetchLock) {
             while (true) {
                 PrefetchedVideo next = peekNextReadyLocked();
                 if (next == null) {
                     if (!prefetchRunning || waitMs <= 0) return null;
-                } else if (!requireWarmReady || isWarmReadyForLocked(next)) {
-                    return takeNextReadyLocked();
                 } else {
-                    ensureWarmNextReady(prefetchGeneration);
+                    return takeNextReadyLocked();
                 }
                 long remainingMs = deadlineMs - SystemClock.uptimeMillis();
                 if (remainingMs <= 0L) {
@@ -2804,16 +2825,26 @@ public final class MainActivity extends Activity {
         return nextStack.pollLast();
     }
 
-    private boolean isWarmReadyForLocked(PrefetchedVideo video) {
-        return video != null
-                && warmPlayer != null
-                && warmVideo == video
-                && warmPlayerReady
-                && warmPlayerRenderedFirstFrame;
-    }
-
     private PrefetchedVideo peekNextReadyLocked() {
         return prefetchedVideo != null ? prefetchedVideo : nextStack.peekLast();
+    }
+
+    private PrefetchedVideo peekWarmAheadCandidateLocked(PrefetchedVideo first) {
+        if (first == null) return null;
+        if (prefetchedVideo != null) {
+            return nextStack.peekLast();
+        }
+        boolean skippedFirst = false;
+        Iterator<PrefetchedVideo> iterator = nextStack.descendingIterator();
+        while (iterator.hasNext()) {
+            PrefetchedVideo video = iterator.next();
+            if (!skippedFirst) {
+                skippedFirst = true;
+                continue;
+            }
+            return video;
+        }
+        return null;
     }
 
     private void prefetchNext() {
@@ -2902,14 +2933,49 @@ public final class MainActivity extends Activity {
     private void ensureWarmNextReady(int generation) {
         uiHandler.post(() -> {
             PrefetchedVideo next = forwardReturnStack.peekLast();
+            PrefetchedVideo ahead = null;
             if (next == null) {
                 synchronized (prefetchLock) {
                     if (generation != prefetchGeneration) return;
                     next = peekNextReadyLocked();
+                    ahead = peekWarmAheadCandidateLocked(next);
+                }
+            } else {
+                synchronized (prefetchLock) {
+                    if (generation != prefetchGeneration) return;
+                    ahead = peekNextReadyLocked();
                 }
             }
             warmPrefetchedVideo(next, generation);
+            warmAheadPrefetchedVideo(ahead, generation);
         });
+    }
+
+    private void promoteWarmAheadToWarmIfNext() {
+        PrefetchedVideo next;
+        synchronized (prefetchLock) {
+            next = peekNextReadyLocked();
+        }
+        if (next == null || warmAheadPlayer == null || warmAheadVideo != next) return;
+        if (warmPlayer != null && warmPlayer != warmAheadPlayer) {
+            releaseWarmPlayer();
+        }
+        warmPlayer = warmAheadPlayer;
+        warmVideo = warmAheadVideo;
+        warmPlayerReady = warmAheadPlayerReady;
+        warmPlayerRenderedFirstFrame = warmAheadPlayerRenderedFirstFrame;
+        warmPrepareStartedMs = warmAheadPrepareStartedMs;
+        warmAheadPlayer = null;
+        warmAheadVideo = null;
+        warmAheadPlayerReady = false;
+        warmAheadPlayerRenderedFirstFrame = false;
+        warmAheadPrepareStartedMs = 0L;
+        if (warmPlayer != null && warmVideo != null) {
+            stageWarmPlayerInSwipePreview(warmVideo);
+        }
+        synchronized (prefetchLock) {
+            prefetchLock.notifyAll();
+        }
     }
 
     private void warmPrefetchedVideo(PrefetchedVideo video, int generation) {
@@ -2991,6 +3057,80 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void warmAheadPrefetchedVideo(PrefetchedVideo video, int generation) {
+        if (video == null || video == warmVideo) {
+            releaseWarmAheadPlayer();
+            return;
+        }
+        uiHandler.post(() -> {
+            synchronized (prefetchLock) {
+                if (generation != prefetchGeneration) return;
+                PrefetchedVideo first = forwardReturnStack.peekLast();
+                PrefetchedVideo expectedAhead;
+                if (first == null) {
+                    first = peekNextReadyLocked();
+                    expectedAhead = peekWarmAheadCandidateLocked(first);
+                } else {
+                    expectedAhead = peekNextReadyLocked();
+                }
+                if (expectedAhead != video || video == warmVideo) return;
+            }
+            if (warmAheadVideo == video && warmAheadPlayer != null) {
+                return;
+            }
+            releaseWarmAheadPlayer();
+            try {
+                warmAheadVideo = video;
+                synchronized (prefetchLock) {
+                    warmAheadPlayerReady = false;
+                    warmAheadPlayerRenderedFirstFrame = false;
+                    warmAheadPrepareStartedMs = SystemClock.uptimeMillis();
+                }
+                String warmVideoId = videoIdentity(video.item);
+                warmAheadPlayer = newPlaybackPlayer();
+                warmAheadPlayer.setVolume(0f);
+                warmAheadPlayer.addListener(new Player.Listener() {
+                    @Override
+                    public void onPlaybackStateChanged(int playbackState) {
+                        if (playbackState == Player.STATE_READY
+                                && warmAheadPlayer != null
+                                && warmAheadVideo == video
+                                && warmVideoId.equals(videoIdentity(video.item))) {
+                            long costMs;
+                            synchronized (prefetchLock) {
+                                warmAheadPlayerReady = true;
+                                costMs = SystemClock.uptimeMillis() - warmAheadPrepareStartedMs;
+                                prefetchLock.notifyAll();
+                            }
+                            android.util.Log.d("BiliClean", "warm ahead ready bvid=" + video.item.bvid
+                                    + " cost=" + costMs + "ms");
+                        }
+                    }
+
+                    @Override
+                    public void onRenderedFirstFrame() {
+                        if (warmAheadPlayer != null
+                                && warmAheadVideo == video
+                                && warmVideoId.equals(videoIdentity(video.item))) {
+                            synchronized (prefetchLock) {
+                                warmAheadPlayerRenderedFirstFrame = true;
+                                prefetchLock.notifyAll();
+                            }
+                        }
+                    }
+                });
+                warmAheadPlayer.setRepeatMode(Player.REPEAT_MODE_OFF);
+                warmAheadPlayer.setPlaybackSpeed(playbackSpeed);
+                warmAheadPlayer.setMediaSource(buildMediaSource(video));
+                warmAheadPlayer.prepare();
+                android.util.Log.d("BiliClean", "warm ahead bvid=" + video.item.bvid);
+            } catch (Exception error) {
+                releaseWarmAheadPlayer();
+                android.util.Log.d("BiliClean", "warm ahead failed=" + error.getMessage());
+            }
+        });
+    }
+
     private void prefetchUiImages(PrefetchedVideo video) {
         if (video == null || video.item == null || video.playInfo == null) return;
         downloadBitmap(video.item.ownerFace);
@@ -3014,6 +3154,23 @@ public final class MainActivity extends Activity {
             warmPlayerReady = false;
             warmPlayerRenderedFirstFrame = false;
             warmPrepareStartedMs = 0L;
+            prefetchLock.notifyAll();
+        }
+    }
+
+    private void releaseWarmAheadPlayer() {
+        if (warmAheadPlayer != null) {
+            try {
+                warmAheadPlayer.release();
+            } catch (Exception ignored) {
+            }
+        }
+        warmAheadPlayer = null;
+        warmAheadVideo = null;
+        synchronized (prefetchLock) {
+            warmAheadPlayerReady = false;
+            warmAheadPlayerRenderedFirstFrame = false;
+            warmAheadPrepareStartedMs = 0L;
             prefetchLock.notifyAll();
         }
     }
@@ -3091,6 +3248,7 @@ public final class MainActivity extends Activity {
             prefetchLock.notifyAll();
         }
         releaseWarmPlayer();
+        releaseWarmAheadPlayer();
         releaseBackPlayer();
     }
 
@@ -5461,6 +5619,9 @@ public final class MainActivity extends Activity {
 
     private void hideDanmakuActionBox() {
         if (selectedDanmakuSprite != null) {
+            if (danmakuLayer != null) {
+                danmakuLayer.resumeSpriteFromFrozenPosition(selectedDanmakuSprite);
+            }
             selectedDanmakuSprite.selected = false;
             selectedDanmakuSprite.selectedUntilWallMs = 0L;
             selectedDanmakuSprite = null;
@@ -9214,6 +9375,9 @@ public final class MainActivity extends Activity {
         private final Paint selfBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final List<DanmakuSprite> sprites = new ArrayList<>();
         private DanmakuSprite pressedSprite;
+        private float pressedSpriteLeft;
+        private float pressedSpriteBaseline;
+        private final android.graphics.RectF pressedSpriteBounds = new android.graphics.RectF();
 
         DanmakuOverlayView(Context context) {
             super(context);
@@ -9274,20 +9438,29 @@ public final class MainActivity extends Activity {
             int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 pressedSprite = hitTest(event.getX(), event.getY());
+                if (pressedSprite != null) {
+                    pressedSpriteLeft = pressedSprite.hasLastDrawPosition ? pressedSprite.lastDrawX : pressedSprite.bounds.left + dp(8);
+                    pressedSpriteBaseline = pressedSprite.hasLastDrawPosition ? pressedSprite.lastBaseline : pressedSprite.bounds.centerY();
+                    pressedSpriteBounds.set(pressedSprite.bounds);
+                }
                 return pressedSprite != null;
             }
             if (action == MotionEvent.ACTION_UP) {
-                DanmakuSprite hit = hitTest(event.getX(), event.getY());
-                if (pressedSprite != null && pressedSprite == hit) {
-                    selectSprite(pressedSprite);
+                DanmakuSprite sprite = pressedSprite;
+                boolean insidePressedBounds = sprite != null && pressedSpriteBounds.contains(event.getX(), event.getY());
+                if (sprite != null && insidePressedBounds) {
+                    selectSprite(sprite, pressedSpriteLeft, pressedSpriteBaseline, pressedSpriteBounds);
                     pressedSprite = null;
+                    pressedSpriteBounds.setEmpty();
                     return true;
                 }
                 pressedSprite = null;
+                pressedSpriteBounds.setEmpty();
                 return false;
             }
             if (action == MotionEvent.ACTION_CANCEL) {
                 pressedSprite = null;
+                pressedSpriteBounds.setEmpty();
                 return false;
             }
             return pressedSprite != null;
@@ -9302,17 +9475,53 @@ public final class MainActivity extends Activity {
         }
 
         private void selectSprite(DanmakuSprite sprite) {
+            selectSprite(sprite,
+                    sprite != null && sprite.hasLastDrawPosition ? sprite.lastDrawX : 0f,
+                    sprite != null && sprite.hasLastDrawPosition ? sprite.lastBaseline : 0f,
+                    sprite == null ? null : sprite.bounds);
+        }
+
+        private void selectSprite(DanmakuSprite sprite, float frozenLeft, float frozenBaseline, android.graphics.RectF anchorBounds) {
             if (sprite == null || sprite.bounds.isEmpty()) return;
             if (selectedDanmakuSprite != null && selectedDanmakuSprite != sprite) {
+                resumeSpriteFromFrozenPosition(selectedDanmakuSprite);
                 selectedDanmakuSprite.selected = false;
+                selectedDanmakuSprite.selectedUntilWallMs = 0L;
             }
             long now = SystemClock.uptimeMillis();
             sprite.selected = true;
             sprite.selectedUntilWallMs = now + 2000L;
-            sprite.frozenLeft = sprite.bounds.left;
-            sprite.frozenBaseline = sprite.lastBaseline;
+            sprite.frozenLeft = frozenLeft != 0f || sprite.hasLastDrawPosition ? frozenLeft : sprite.bounds.left + dp(8);
+            sprite.frozenBaseline = frozenBaseline != 0f || sprite.hasLastDrawPosition ? frozenBaseline : sprite.bounds.centerY();
+            if (anchorBounds != null && !anchorBounds.isEmpty()) {
+                sprite.bounds.set(anchorBounds);
+            }
             showDanmakuActionBox(sprite, sprite.bounds.centerX(), sprite.bounds.bottom);
             invalidate();
+        }
+
+        void resumeSpriteFromFrozenPosition(DanmakuSprite sprite) {
+            if (sprite == null || !sprite.selected) return;
+            long now = SystemClock.uptimeMillis();
+            long videoPositionMs = player == null ? -1L : Math.max(0L, player.getCurrentPosition());
+            if (sprite.mode == 4 || sprite.mode == 5) {
+                sprite.startedAtMs = now;
+                if (videoPositionMs >= 0L) sprite.videoTimeMs = videoPositionMs;
+                return;
+            }
+            float textSize = (sprite.textSp > 0 ? sprite.textSp : danmakuTextSp) * getResources().getDisplayMetrics().scaledDensity;
+            fillPaint.setTextSize(textSize);
+            float textWidth = fillPaint.measureText(sprite.text);
+            float startX = getWidth() + dp(8);
+            float endX = -textWidth - dp(8);
+            float denominator = endX - startX;
+            float progress = denominator == 0f ? 0f : (sprite.frozenLeft - startX) / denominator;
+            progress = Math.max(0f, Math.min(0.999f, progress));
+            long elapsedMs = Math.round(progress * sprite.durationMs);
+            sprite.startedAtMs = now - elapsedMs;
+            if (videoPositionMs >= 0L) {
+                sprite.videoTimeMs = videoPositionMs - elapsedMs;
+            }
         }
 
         @Override
@@ -9337,8 +9546,6 @@ public final class MainActivity extends Activity {
                 DanmakuSprite sprite = iterator.next();
                 if (sprite.selected && now >= sprite.selectedUntilWallMs) {
                     if (selectedDanmakuSprite == sprite) hideDanmakuActionBox();
-                    iterator.remove();
-                    continue;
                 }
                 float progress = sprite.videoTimeMs >= 0L && videoPositionMs >= 0L
                         ? (videoPositionMs - sprite.videoTimeMs) / (float) sprite.durationMs
@@ -9374,7 +9581,9 @@ public final class MainActivity extends Activity {
                     y = danmakuBaselineForRow(top, sprite.row, rowHeight);
                 }
                 Paint.FontMetrics metrics = fillPaint.getFontMetrics();
+                sprite.lastDrawX = x;
                 sprite.lastBaseline = y;
+                sprite.hasLastDrawPosition = true;
                 sprite.bounds.set(
                         x - dp(8),
                         y + metrics.ascent - dp(5),
@@ -9413,19 +9622,21 @@ public final class MainActivity extends Activity {
     private static final class DanmakuSprite {
         final String text;
         final int row;
-        final long startedAtMs;
+        long startedAtMs;
         final int color;
         final long durationMs;
         final int mode;
         final boolean self;
         final int textSp;
-        final long videoTimeMs;
+        long videoTimeMs;
         final android.graphics.RectF bounds = new android.graphics.RectF();
         boolean selected;
         long selectedUntilWallMs;
         float frozenLeft;
         float frozenBaseline;
+        float lastDrawX;
         float lastBaseline;
+        boolean hasLastDrawPosition;
 
         DanmakuSprite(String text, int row, long startedAtMs, int color, long durationMs, int mode, boolean self, int textSp, long videoTimeMs) {
             this.text = text;
