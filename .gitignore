@@ -1,0 +1,21 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+
+# Local-only helper scripts and UI test artifacts.
+/build-debug.ps1
+/captures/
+/window*.xml
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+
+# Signing material.
+*.jks
+*.keystore
+*.p12

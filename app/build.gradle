@@ -1,0 +1,31 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.biliclean.app"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.biliclean.app"
+        minSdk 23
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "androidx.media3:media3-exoplayer:1.10.1"
+    implementation "androidx.media3:media3-ui:1.10.1"
+    implementation "androidx.media3:media3-datasource:1.10.1"
+    implementation "androidx.media3:media3-database:1.10.1"
+    implementation "com.airbnb.android:lottie:6.6.2"
+    implementation "com.github.yyued:SVGAPlayer-Android:2.6.1"
+    implementation "com.google.zxing:core:3.5.3"
+}
