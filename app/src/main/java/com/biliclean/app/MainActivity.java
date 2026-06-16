@@ -109,15 +109,15 @@ public final class MainActivity extends Activity {
     private static final String PREF_QUALITY_QN = "quality_qn";
     private static final int BILI_PINK = 0xFFFF6699;
     private static final long MEDIA_CACHE_BYTES = 300L * 1024L * 1024L;
-    private static final int FORWARD_PREFETCH_BATCH_SIZE = 5;
+    private static final int FORWARD_PREFETCH_BATCH_SIZE = 2;
     private static final int FORWARD_PREFETCH_REFILL_THRESHOLD = 2;
-    private static final int FORWARD_PREFETCH_LIMIT = 10;
+    private static final int FORWARD_PREFETCH_LIMIT = 4;
     private static final long PREFETCH_STREAM_BYTES = 2L * 1024L * 1024L;
     private static final long PROGRESS_FRAME_BUCKET_MS = 4000L;
     private static final float DESIGN_STATUS_BOTTOM_PCT = 4.95f;
     private static final float DESIGN_GESTURE_TOP_PCT = 96.22f;
     private static final float DESIGN_APP_HEIGHT_PCT = DESIGN_GESTURE_TOP_PCT - DESIGN_STATUS_BOTTOM_PCT;
-    private static final float SWIPE_SWITCH_VELOCITY_THRESHOLD = 1100f;
+    private static final float SWIPE_SWITCH_VELOCITY_THRESHOLD = 800f;
 
     private final CleanQueueRepository repository = new CleanQueueRepository();
     private final Object prefetchLock = new Object();
@@ -1103,7 +1103,7 @@ public final class MainActivity extends Activity {
     }
 
     private void finishSwipe(float dy, float velocityY) {
-        float distanceThreshold = Math.max(dp(118), root.getHeight() * 0.20f);
+        float distanceThreshold = Math.max(dp(84), root.getHeight() * 0.14f);
         boolean shouldSwitch = Math.abs(dy) >= distanceThreshold || Math.abs(velocityY) > SWIPE_SWITCH_VELOCITY_THRESHOLD;
         if (!shouldSwitch) {
             animateSwipeBack(220, null);
@@ -2450,6 +2450,7 @@ public final class MainActivity extends Activity {
         metaView.setText(formatCount(item.viewCount) + "播放⌄");
         noticeView.setVisibility(View.GONE);
         noticeView.setText("");
+        resetProgressChromeForNewVideo();
         likeButton.setCount(formatCount(item.likeCount));
         likeButton.setIconColor(item.liked ? BILI_PINK : Color.WHITE);
         if (landscapeLikeButton != null) {
@@ -2476,6 +2477,22 @@ public final class MainActivity extends Activity {
         if (landscapeSpeedView != null) landscapeSpeedView.setText("倍速");
         updateFullscreenButtonIcon();
         applyVideoResizeMode();
+    }
+
+    private void resetProgressChromeForNewVideo() {
+        long duration = player == null ? 1L : Math.max(1L, player.getDuration());
+        updateProgressFill(progressFill, 0L, duration);
+        updateProgressFill(lightProgressFill, 0L, duration);
+        if (progressThumb != null) {
+            progressThumb.setVisibility(View.VISIBLE);
+            progressThumb.setEyeDirection(0f, false);
+            progressThumb.bringToFront();
+        }
+        if (lightProgressThumb != null) {
+            lightProgressThumb.setVisibility(View.VISIBLE);
+            lightProgressThumb.setEyeDirection(0f, false);
+            lightProgressThumb.bringToFront();
+        }
     }
 
     private MediaSource buildMediaSource(PrefetchedVideo video) {
@@ -2588,6 +2605,13 @@ public final class MainActivity extends Activity {
                         cacheLeadBytes(video);
                     }
                 }).start();
+            }
+            synchronized (prefetchLock) {
+                if (generation == prefetchGeneration
+                        && !prefetchRunning
+                        && forwardPrefetchCountLocked() <= FORWARD_PREFETCH_REFILL_THRESHOLD) {
+                    uiHandler.post(this::prefetchNext);
+                }
             }
         }).start();
     }
@@ -4976,7 +5000,7 @@ public final class MainActivity extends Activity {
             lightDanmakuButton.setBackgroundColor(Color.TRANSPARENT);
         }
         if (danmakuInputPill != null) {
-            danmakuInputPill.setText(danmakuVisible ? "发个友善的弹幕见证当下" : "弹幕已隐藏");
+            danmakuInputPill.setText(danmakuVisible ? "发弹幕" : "弹幕已隐藏");
             danmakuInputPill.setTextColor(danmakuVisible ? 0xFFE1E1E1 : 0xFFB0B4BC);
         }
         if (lightDanmakuInputPill != null) {
