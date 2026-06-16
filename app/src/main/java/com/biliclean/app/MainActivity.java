@@ -1240,7 +1240,9 @@ public final class MainActivity extends Activity {
         swipePreviewItem = item;
         swipePreviewVideoKey = videoIdentity(item);
         applyVideoViewportLayout(swipePreviewView, item);
-        loadFirstFrameInto(video, swipePreviewView);
+        swipePreviewView.setImageDrawable(null);
+        swipePreviewView.setBackgroundColor(Color.BLACK);
+        swipePreviewView.setVisibility(View.VISIBLE);
         attachWarmPlayerToSwipePreview(video);
         if (swipePreviewAvatar != null) loadImageInto(item.ownerFace, swipePreviewAvatar);
         swipePreviewWatching.setText(watchingText(item));
@@ -1298,6 +1300,16 @@ public final class MainActivity extends Activity {
         if (swipePreviewRail != null) swipePreviewRail.bringToFront();
         if (swipePreviewBottomInfo != null) swipePreviewBottomInfo.bringToFront();
         if (swipePreviewFullscreenButton != null) swipePreviewFullscreenButton.bringToFront();
+    }
+
+    private void stageWarmPlayerInSwipePreview(PrefetchedVideo video) {
+        if (video == null || video.item == null || root == null || root.getHeight() <= 0) return;
+        if (switchAnimating || landscapeMode || commentsPanel == null || commentsPanel.getVisibility() == View.VISIBLE) return;
+        swipePreviewForward = true;
+        swipePreviewPage.setVisibility(View.VISIBLE);
+        swipePreviewPage.setAlpha(1f);
+        swipePreviewPage.setTranslationY(root.getHeight());
+        showSwipePreviewItem(video);
     }
 
     private void renderSwipePreviewRail(FeedItem item) {
@@ -2820,10 +2832,13 @@ public final class MainActivity extends Activity {
                             }
                             android.util.Log.d("BiliClean", "warm ready bvid=" + video.item.bvid
                                     + " cost=" + costMs + "ms");
-                            if (swipePreviewPage != null
-                                    && swipePreviewPage.getVisibility() == View.VISIBLE
-                                    && warmVideoId.equals(swipePreviewVideoKey)) {
-                                attachWarmPlayerToSwipePreview(video);
+                            if (swipePreviewPage != null) {
+                                if (swipePreviewPage.getVisibility() == View.VISIBLE
+                                        && warmVideoId.equals(swipePreviewVideoKey)) {
+                                    attachWarmPlayerToSwipePreview(video);
+                                } else {
+                                    stageWarmPlayerInSwipePreview(video);
+                                }
                             }
                         }
                     }
@@ -2842,39 +2857,7 @@ public final class MainActivity extends Activity {
 
     private void prefetchUiImages(PrefetchedVideo video) {
         if (video == null || video.item == null || video.playInfo == null) return;
-        String key = firstFrameCacheKey(video.item);
-        if (!imageCache.containsKey(key)) {
-            Bitmap frame = downloadBitmap(video.item.cover);
-            if (frame != null) imageCache.put(key, frame);
-        }
-        downloadBitmap(video.item.cover);
         downloadBitmap(video.item.ownerFace);
-    }
-
-    private void loadFirstFrameInto(PrefetchedVideo video, ImageView target) {
-        if (target == null) return;
-        target.setImageDrawable(null);
-        if (video == null || video.item == null || video.playInfo == null) return;
-        String key = firstFrameCacheKey(video.item);
-        target.setTag(key);
-        Bitmap cached = imageCache.get(key);
-        if (cached != null) {
-            target.setImageBitmap(cached);
-            return;
-        }
-        new Thread(() -> {
-            Bitmap frame = downloadBitmap(video.item.cover);
-            if (frame != null) imageCache.put(key, frame);
-            runOnUiThread(() -> {
-                if (frame != null && key.equals(target.getTag())) {
-                    target.setImageBitmap(frame);
-                }
-            });
-        }).start();
-    }
-
-    private String firstFrameCacheKey(FeedItem item) {
-        return "first-frame:" + videoIdentity(item);
     }
 
     private void releaseWarmPlayer() {
@@ -3686,7 +3669,18 @@ public final class MainActivity extends Activity {
         commentsPanelAnimator.addUpdateListener(animation -> {
             float translation = (Float) animation.getAnimatedValue();
             commentsPanel.setTranslationY(translation);
-            applyPlayerFrame(commentsTransitionFrame(compactFrame, normalFrame, translation, normalTranslation), resizeMode);
+            float fraction = animation.getAnimatedFraction();
+            boolean closing = endAction != null;
+            Rect frame = commentsTransitionFrame(
+                    compactFrame,
+                    normalFrame,
+                    translation,
+                    normalTranslation,
+                    fraction,
+                    closing,
+                    fromTranslation,
+                    toTranslation);
+            applyPlayerFrame(frame, resizeMode);
             if (danmakuLayer != null) danmakuLayer.invalidate();
         });
         commentsPanelAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
@@ -3715,11 +3709,16 @@ public final class MainActivity extends Activity {
     }
 
     private Rect commentsTransitionFrame(Rect compactFrame, Rect normalFrame,
-                                         float translation, float normalTranslation) {
-        if (normalTranslation <= 0f) {
-            return translation <= 0f ? compactFrame : normalFrame;
+                                         float translation, float normalTranslation,
+                                         float fraction, boolean closing,
+                                         float fromTranslation, float toTranslation) {
+        float progress;
+        if (normalTranslation <= 0f || Math.abs(fromTranslation - toTranslation) < 0.5f) {
+            progress = closing ? fraction : 1f - fraction;
+        } else {
+            progress = translation / normalTranslation;
         }
-        float progress = Math.max(0f, Math.min(1f, translation / normalTranslation));
+        progress = Math.max(0f, Math.min(1f, progress));
         return lerpRect(compactFrame, normalFrame, progress);
     }
 
