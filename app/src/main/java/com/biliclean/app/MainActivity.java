@@ -63,10 +63,8 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.database.StandaloneDatabaseProvider;
-import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.cache.CacheDataSource;
-import androidx.media3.datasource.cache.CacheWriter;
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
 import androidx.media3.datasource.cache.SimpleCache;
 import androidx.media3.exoplayer.DefaultLoadControl;
@@ -113,7 +111,6 @@ public final class MainActivity extends Activity {
     private static final int FORWARD_PREFETCH_BATCH_SIZE = 5;
     private static final int FORWARD_PREFETCH_REFILL_THRESHOLD = 2;
     private static final int FORWARD_PREFETCH_LIMIT = 10;
-    private static final long PREFETCH_STREAM_BYTES = 8L * 1024L * 1024L;
     private static final long PROGRESS_FRAME_BUCKET_MS = 4000L;
     private static final float DESIGN_STATUS_BOTTOM_PCT = 4.95f;
     private static final float DESIGN_GESTURE_TOP_PCT = 96.22f;
@@ -138,6 +135,8 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private ExoPlayer player;
     private ExoPlayer warmPlayer;
+    private boolean warmPlayerReady;
+    private long warmPrepareStartedMs;
     private SimpleCache mediaCache;
     private AudioManager audioManager;
     private PlayerView playerView;
@@ -2296,7 +2295,6 @@ public final class MainActivity extends Activity {
         PrefetchedVideo video = fetchNextPlayable();
         if (video != null) {
             prefetchUiImages(video);
-            cacheLeadBytes(video);
         }
         return video;
     }
@@ -2405,24 +2403,31 @@ public final class MainActivity extends Activity {
         long afterUiMs = SystemClock.uptimeMillis();
 
         boolean useWarmPlayer = warmPlayer != null && warmVideo == video;
+        boolean warmWasReady = useWarmPlayer && warmPlayerReady;
+        long beforeAttachMs = SystemClock.uptimeMillis();
+        long afterAttachMs;
+        long afterPrepareMs;
         if (useWarmPlayer) {
             ExoPlayer oldPlayer = player;
             player = warmPlayer;
             warmPlayer = null;
             warmVideo = null;
+            warmPlayerReady = false;
+            warmPrepareStartedMs = 0L;
             playerView.setPlayer(player);
             if (oldPlayer != null) {
-                try {
-                    oldPlayer.release();
-                } catch (Exception ignored) {
-                }
+                releasePlayerLater(oldPlayer);
             }
             android.util.Log.d("BiliClean", "use warm player bvid=" + currentItem.bvid);
+            afterAttachMs = SystemClock.uptimeMillis();
+            afterPrepareMs = afterAttachMs;
         } else {
             releaseWarmPlayer();
             MediaSource source = buildMediaSource(video);
+            afterAttachMs = SystemClock.uptimeMillis();
             player.setMediaSource(source);
             player.prepare();
+            afterPrepareMs = SystemClock.uptimeMillis();
         }
         player.setRepeatMode(autoSlideEnabled ? Player.REPEAT_MODE_OFF : Player.REPEAT_MODE_ONE);
         player.setPlaybackSpeed(playbackSpeed);
@@ -2434,7 +2439,11 @@ public final class MainActivity extends Activity {
         long afterPlayerMs = SystemClock.uptimeMillis();
         if (keepSwipePreview) {
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
-            uiHandler.postDelayed(releaseHeldSwipePreviewRunnable, 1600);
+            if (useWarmPlayer && warmWasReady && player.getPlaybackState() == Player.STATE_READY) {
+                uiHandler.post(this::releaseHeldSwipePreview);
+            } else {
+                uiHandler.postDelayed(releaseHeldSwipePreviewRunnable, 1600);
+            }
         }
         if (commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE) {
             hideCommentDetailDrawer(false);
@@ -2452,9 +2461,12 @@ public final class MainActivity extends Activity {
         ensureWarmNextReady(currentPrefetchGeneration());
         android.util.Log.d("BiliClean", "switch timing bvid=" + currentItem.bvid
                 + " ui=" + (afterUiMs - playStartMs)
+                + "ms attach=" + (afterAttachMs - beforeAttachMs)
+                + "ms prepare=" + (afterPrepareMs - afterAttachMs)
                 + "ms player=" + (afterPlayerMs - afterUiMs)
                 + "ms total=" + (SystemClock.uptimeMillis() - playStartMs)
-                + "ms warm=" + useWarmPlayer);
+                + "ms warm=" + useWarmPlayer
+                + " warmReady=" + warmWasReady);
     }
 
     private void updateItemViews(FeedItem item, PlayInfo playInfo) {
@@ -2565,15 +2577,29 @@ public final class MainActivity extends Activity {
     }
 
     private PrefetchedVideo takeNextReady(long waitMs) {
+        long deadlineMs = SystemClock.uptimeMillis() + Math.max(0L, waitMs);
+        boolean requireWarmReady = currentVideo != null;
         synchronized (prefetchLock) {
-            if (forwardPrefetchCountLocked() == 0 && prefetchRunning && waitMs > 0) {
+            while (true) {
+                PrefetchedVideo next = peekNextReadyLocked();
+                if (next == null) {
+                    if (!prefetchRunning || waitMs <= 0) return null;
+                } else if (!requireWarmReady || isWarmReadyForLocked(next)) {
+                    return takeNextReadyLocked();
+                } else {
+                    ensureWarmNextReady(prefetchGeneration);
+                }
+                long remainingMs = deadlineMs - SystemClock.uptimeMillis();
+                if (remainingMs <= 0L) {
+                    return takeNextReadyLocked();
+                }
                 try {
-                    prefetchLock.wait(waitMs);
+                    prefetchLock.wait(Math.min(remainingMs, 250L));
                 } catch (InterruptedException error) {
                     Thread.currentThread().interrupt();
+                    return takeNextReadyLocked();
                 }
             }
-            return takeNextReadyLocked();
         }
     }
 
@@ -2584,6 +2610,13 @@ public final class MainActivity extends Activity {
             return video;
         }
         return nextStack.pollLast();
+    }
+
+    private boolean isWarmReadyForLocked(PrefetchedVideo video) {
+        return video != null
+                && warmPlayer != null
+                && warmVideo == video
+                && warmPlayerReady;
     }
 
     private PrefetchedVideo peekNextReadyLocked() {
@@ -2622,7 +2655,6 @@ public final class MainActivity extends Activity {
                     PrefetchedVideo result = fetchNextPlayable();
                     if (result == null) break;
                     prefetchUiImages(result);
-                    cacheLeadBytes(result);
                     results.add(result);
                     boolean firstReady = false;
                     synchronized (prefetchLock) {
@@ -2700,7 +2732,30 @@ public final class MainActivity extends Activity {
             releaseWarmPlayer();
             try {
                 warmVideo = video;
+                synchronized (prefetchLock) {
+                    warmPlayerReady = false;
+                    warmPrepareStartedMs = SystemClock.uptimeMillis();
+                }
+                String warmVideoId = videoIdentity(video.item);
                 warmPlayer = newPlaybackPlayer();
+                warmPlayer.addListener(new Player.Listener() {
+                    @Override
+                    public void onPlaybackStateChanged(int playbackState) {
+                        if (playbackState == Player.STATE_READY
+                                && warmPlayer != null
+                                && warmVideo == video
+                                && warmVideoId.equals(videoIdentity(video.item))) {
+                            long costMs;
+                            synchronized (prefetchLock) {
+                                warmPlayerReady = true;
+                                costMs = SystemClock.uptimeMillis() - warmPrepareStartedMs;
+                                prefetchLock.notifyAll();
+                            }
+                            android.util.Log.d("BiliClean", "warm ready bvid=" + video.item.bvid
+                                    + " cost=" + costMs + "ms");
+                        }
+                    }
+                });
                 warmPlayer.setRepeatMode(Player.REPEAT_MODE_OFF);
                 warmPlayer.setPlaybackSpeed(playbackSpeed);
                 warmPlayer.setMediaSource(buildMediaSource(video));
@@ -2711,26 +2766,6 @@ public final class MainActivity extends Activity {
                 android.util.Log.d("BiliClean", "warm next failed=" + error.getMessage());
             }
         });
-    }
-
-    private void cacheLeadBytes(PrefetchedVideo video) {
-        if (video == null || video.playInfo == null || video.item == null || mediaCache == null) return;
-        cacheLeadBytes(video.item, video.playInfo.videoUrl);
-        cacheLeadBytes(video.item, video.playInfo.audioUrl);
-    }
-
-    private void cacheLeadBytes(FeedItem item, String url) {
-        if (url == null || url.trim().isEmpty()) return;
-        try {
-            CacheDataSource dataSource = buildCacheDataSourceFactory(item).createDataSource();
-            DataSpec dataSpec = new DataSpec.Builder()
-                    .setUri(Uri.parse(url))
-                    .setPosition(0L)
-                    .setLength(PREFETCH_STREAM_BYTES)
-                    .build();
-            new CacheWriter(dataSource, dataSpec, new byte[64 * 1024], null).cache();
-        } catch (Exception ignored) {
-        }
     }
 
     private void prefetchUiImages(PrefetchedVideo video) {
@@ -2779,6 +2814,21 @@ public final class MainActivity extends Activity {
         }
         warmPlayer = null;
         warmVideo = null;
+        synchronized (prefetchLock) {
+            warmPlayerReady = false;
+            warmPrepareStartedMs = 0L;
+            prefetchLock.notifyAll();
+        }
+    }
+
+    private void releasePlayerLater(ExoPlayer doomedPlayer) {
+        if (doomedPlayer == null) return;
+        uiHandler.postDelayed(() -> {
+            try {
+                doomedPlayer.release();
+            } catch (Exception ignored) {
+            }
+        }, 1200);
     }
 
     private void clearPrefetch() {
