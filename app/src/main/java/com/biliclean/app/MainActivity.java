@@ -933,6 +933,17 @@ public final class MainActivity extends Activity {
             case MotionEvent.ACTION_DOWN:
                 if (selectedDanmakuSprite != null) {
                     consumeDanmakuUnfreezeTouch = true;
+                    recycleSwipeVelocityTracker();
+                    stopFastForward();
+                    swipeDragging = false;
+                    lastDragY = 0f;
+                    cancelSwipeChromeAnimation();
+                    resetSwipeChrome();
+                    if (swipePreviewPage != null && !switchAnimating) {
+                        hideSwipePreview();
+                    }
+                    pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
+                    swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
                     hideDanmakuActionBox();
                     return true;
                 }
@@ -957,6 +968,10 @@ public final class MainActivity extends Activity {
                 gestureDetector.onTouchEvent(event);
                 return true;
             case MotionEvent.ACTION_MOVE:
+                if (consumeDanmakuUnfreezeTouch) {
+                    resetSwipeChrome();
+                    return true;
+                }
                 if (swipeVelocityTracker != null) swipeVelocityTracker.addMovement(event);
                 float dx = event.getRawX() - touchDownX;
                 float dy = event.getRawY() - touchDownY;
@@ -1029,6 +1044,9 @@ public final class MainActivity extends Activity {
             case MotionEvent.ACTION_UP:
                 if (consumeDanmakuUnfreezeTouch) {
                     consumeDanmakuUnfreezeTouch = false;
+                    resetSwipeChrome();
+                    pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
+                    swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
                     return true;
                 }
                 if (swipeVelocityTracker != null) swipeVelocityTracker.addMovement(event);
@@ -1067,6 +1085,7 @@ public final class MainActivity extends Activity {
                 return true;
             case MotionEvent.ACTION_CANCEL:
                 consumeDanmakuUnfreezeTouch = false;
+                resetSwipeChrome();
                 recycleSwipeVelocityTracker();
                 stopFastForward();
                 if (landscapeProgressDragging) {
@@ -9439,9 +9458,10 @@ public final class MainActivity extends Activity {
             if (action == MotionEvent.ACTION_DOWN) {
                 pressedSprite = hitTest(event.getX(), event.getY());
                 if (pressedSprite != null) {
-                    pressedSpriteLeft = pressedSprite.hasLastDrawPosition ? pressedSprite.lastDrawX : pressedSprite.bounds.left + dp(8);
-                    pressedSpriteBaseline = pressedSprite.hasLastDrawPosition ? pressedSprite.lastBaseline : pressedSprite.bounds.centerY();
-                    pressedSpriteBounds.set(pressedSprite.bounds);
+                    captureSpriteAnchorNow(pressedSprite, pressedSpriteBounds);
+                    pressedSpriteLeft = pressedSpriteBounds.left + dp(8);
+                    Paint.FontMetrics metrics = fillPaint.getFontMetrics();
+                    pressedSpriteBaseline = pressedSpriteBounds.top - metrics.ascent + dp(5);
                 }
                 return pressedSprite != null;
             }
@@ -9498,6 +9518,50 @@ public final class MainActivity extends Activity {
             }
             showDanmakuActionBox(sprite, sprite.bounds.centerX(), sprite.bounds.bottom);
             invalidate();
+        }
+
+        private void captureSpriteAnchorNow(DanmakuSprite sprite, android.graphics.RectF outBounds) {
+            if (sprite == null || outBounds == null) return;
+            int top = danmakuTopPx();
+            int maxBottom = danmakuMaxBottomPx();
+            int bottom = danmakuDisplayBottomPx();
+            int rowHeight = danmakuRowHeightPx();
+            int clipRight = Math.max(0, getWidth());
+            float textSize = (sprite.textSp > 0 ? sprite.textSp : danmakuTextSp) * getResources().getDisplayMetrics().scaledDensity;
+            fillPaint.setTextSize(textSize);
+            float textWidth = fillPaint.measureText(sprite.text);
+            long now = SystemClock.uptimeMillis();
+            long videoPositionMs = player == null ? -1L : Math.max(0L, player.getCurrentPosition());
+            float progress = sprite.videoTimeMs >= 0L && videoPositionMs >= 0L
+                    ? (videoPositionMs - sprite.videoTimeMs) / (float) sprite.durationMs
+                    : (now - sprite.startedAtMs) / (float) sprite.durationMs;
+            progress = Math.max(0f, Math.min(0.999f, progress));
+            float x;
+            float y;
+            if (sprite.selected) {
+                x = sprite.frozenLeft;
+                y = sprite.frozenBaseline;
+            } else if (sprite.mode == 4 || sprite.mode == 5) {
+                x = Math.max(dp(8), Math.min(clipRight - textWidth - dp(8), (clipRight - textWidth) / 2f));
+                if (sprite.mode == 5) {
+                    y = danmakuBaselineForRow(top, sprite.row, rowHeight);
+                } else {
+                    int bottomRowTop = Math.max(top, Math.min(maxBottom, bottom) - rowHeight * (sprite.row + 1));
+                    y = danmakuBaselineForRow(bottomRowTop, 0, rowHeight);
+                }
+            } else {
+                float startX = getWidth() + dp(8);
+                float endX = -textWidth - dp(8);
+                x = startX + (endX - startX) * progress;
+                y = danmakuBaselineForRow(top, sprite.row, rowHeight);
+            }
+            Paint.FontMetrics metrics = fillPaint.getFontMetrics();
+            outBounds.set(
+                    x - dp(8),
+                    y + metrics.ascent - dp(5),
+                    x + textWidth + dp(8),
+                    y + metrics.descent + dp(5)
+            );
         }
 
         void resumeSpriteFromFrozenPosition(DanmakuSprite sprite) {
