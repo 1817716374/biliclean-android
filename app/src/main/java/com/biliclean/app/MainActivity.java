@@ -162,6 +162,10 @@ public final class MainActivity extends Activity {
     private SVGAVideoEntity tripleLikeSvgaVideo;
     private FrameLayout root;
     private FrameLayout pageLayer;
+    private int systemInsetLeft;
+    private int systemInsetTop;
+    private int systemInsetRight;
+    private int systemInsetBottom;
     private View topShade;
     private View rightShade;
     private FrameLayout swipePreviewPage;
@@ -571,6 +575,33 @@ public final class MainActivity extends Activity {
     private void buildUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left = 0;
+            int top = 0;
+            int right = 0;
+            int bottom = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                left = insets.getSystemWindowInsetLeft();
+                top = insets.getSystemWindowInsetTop();
+                right = insets.getSystemWindowInsetRight();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            boolean changed = left != systemInsetLeft
+                    || top != systemInsetTop
+                    || right != systemInsetRight
+                    || bottom != systemInsetBottom;
+            systemInsetLeft = left;
+            systemInsetTop = top;
+            systemInsetRight = right;
+            systemInsetBottom = bottom;
+            if (changed && root != null) {
+                root.post(() -> {
+                    applyResponsivePortraitLayout();
+                    relayoutCommentsPanelForInsets();
+                });
+            }
+            return insets;
+        });
 
         pageLayer = new FrameLayout(this);
         pageLayer.setBackgroundColor(Color.BLACK);
@@ -713,9 +744,11 @@ public final class MainActivity extends Activity {
         videoTouchLayer.setOnTouchListener((view, event) -> handleVideoTouch(event));
 
         setContentView(root);
+        root.requestApplyInsets();
         root.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 applyResponsivePortraitLayout();
+                relayoutCommentsPanelForInsets();
             }
         });
         root.post(this::applyResponsivePortraitLayout);
@@ -2096,11 +2129,11 @@ public final class MainActivity extends Activity {
     }
 
     private int docX(float pct) {
-        return Math.round(rootWidth() * pct / 100f);
+        return contentLeft() + Math.round(rootWidth() * pct / 100f);
     }
 
     private int docY(float pct) {
-        return Math.round(rootHeight() * (pct - DESIGN_STATUS_BOTTOM_PCT) / DESIGN_APP_HEIGHT_PCT);
+        return contentTop() + Math.round(rootHeight() * (pct - DESIGN_STATUS_BOTTOM_PCT) / DESIGN_APP_HEIGHT_PCT);
     }
 
     private int docWidth(float pct) {
@@ -2112,11 +2145,39 @@ public final class MainActivity extends Activity {
     }
 
     private int rootWidth() {
-        return root == null || root.getWidth() <= 0 ? getResources().getDisplayMetrics().widthPixels : root.getWidth();
+        return Math.max(1, contentRight() - contentLeft());
     }
 
     private int rootHeight() {
-        return root == null || root.getHeight() <= 0 ? getResources().getDisplayMetrics().heightPixels : root.getHeight();
+        return Math.max(1, contentBottom() - contentTop());
+    }
+
+    private int rawRootWidth() {
+        return root == null || root.getWidth() <= 0
+                ? getResources().getDisplayMetrics().widthPixels
+                : root.getWidth();
+    }
+
+    private int rawRootHeight() {
+        return root == null || root.getHeight() <= 0
+                ? getResources().getDisplayMetrics().heightPixels
+                : root.getHeight();
+    }
+
+    private int contentLeft() {
+        return landscapeMode ? 0 : Math.max(0, systemInsetLeft);
+    }
+
+    private int contentTop() {
+        return landscapeMode ? 0 : Math.max(0, systemInsetTop);
+    }
+
+    private int contentRight() {
+        return rawRootWidth() - (landscapeMode ? 0 : Math.max(0, systemInsetRight));
+    }
+
+    private int contentBottom() {
+        return rawRootHeight() - (landscapeMode ? 0 : Math.max(0, systemInsetBottom));
     }
 
     private FrameLayout buildTopBar() {
@@ -4042,6 +4103,7 @@ public final class MainActivity extends Activity {
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         }
+        if (root != null) root.requestApplyInsets();
     }
 
     private void toggleLandscapeControls() {
@@ -4170,10 +4232,10 @@ public final class MainActivity extends Activity {
         int height = commentsPanel.getLayoutParams() == null
                 ? commentsHalfHeight()
                 : Math.max(1, commentsPanel.getLayoutParams().height);
-        int finalPanelTop = Math.max(1, rootHeight() - height);
+        int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - height);
         boolean horizontalInPortrait = isHorizontalVideoInPortrait();
         Rect currentFrame = currentPlayerFrame();
-        int startPanelTop = Math.max(finalPanelTop, Math.min(rootHeight(), currentFrame.bottom));
+        int startPanelTop = Math.max(finalPanelTop, Math.min(contentBottom(), currentFrame.bottom));
         float startTranslation = horizontalInPortrait ? height : Math.max(0f, startPanelTop - finalPanelTop);
         commentsPanel.setTranslationY(startTranslation);
         commentsPanel.setVisibility(View.VISIBLE);
@@ -4196,7 +4258,7 @@ public final class MainActivity extends Activity {
             int height = commentsPanel.getLayoutParams() == null
                     ? commentsPanel.getHeight()
                     : Math.max(1, commentsPanel.getLayoutParams().height);
-            int finalPanelTop = Math.max(1, rootHeight() - height);
+            int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - height);
             float startTranslation = commentsPanel.getTranslationY();
             float endTranslation = isHorizontalVideoInPortrait()
                     ? height
@@ -4291,8 +4353,8 @@ public final class MainActivity extends Activity {
         if (target == null || root == null || root.getWidth() <= 0 || root.getHeight() <= 0) return;
         boolean horizontal = item != null && item.isHorizontal();
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
-        params.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        params.leftMargin = 0;
+        params.width = landscapeMode ? ViewGroup.LayoutParams.MATCH_PARENT : rootWidth();
+        params.leftMargin = landscapeMode ? 0 : contentLeft();
         params.gravity = Gravity.NO_GRAVITY;
         if (horizontal) {
             params.topMargin = docY(24.57f);
@@ -4316,25 +4378,27 @@ public final class MainActivity extends Activity {
     }
 
     private Rect commentsVideoFrame(int panelHeight) {
-        return commentsVideoFrameForPanelTop(Math.max(1, rootHeight() - panelHeight));
+        return commentsVideoFrameForPanelTop(Math.max(contentTop() + 1, contentBottom() - panelHeight));
     }
 
     private Rect commentsVideoFrameForPanelTop(int panelTop) {
         int rw = rootWidth();
-        panelTop = Math.max(1, Math.min(rootHeight(), panelTop));
+        int leftEdge = contentLeft();
+        panelTop = Math.max(contentTop() + 1, Math.min(contentBottom(), panelTop));
         boolean horizontal = currentItem != null && currentItem.isHorizontal();
         float aspect = currentItem != null && currentItem.width > 0 && currentItem.height > 0
                 ? currentItem.width / (float) currentItem.height
                 : (horizontal ? 16f / 9f : 9f / 16f);
         if (horizontal) {
-            int height = Math.min(panelTop, Math.max(1, Math.round(rw / Math.max(0.1f, aspect))));
-            int top = Math.max(0, panelTop - height);
-            return new Rect(0, top, rw, top + height);
+            int height = Math.min(Math.max(1, panelTop - contentTop()),
+                    Math.max(1, Math.round(rw / Math.max(0.1f, aspect))));
+            int top = Math.max(contentTop(), panelTop - height);
+            return new Rect(leftEdge, top, leftEdge + rw, top + height);
         }
-        int height = panelTop;
+        int height = Math.max(1, panelTop - contentTop());
         int width = Math.min(rw, Math.max(1, Math.round(height * Math.max(0.1f, aspect))));
-        int left = Math.max(0, (rw - width) / 2);
-        return new Rect(left, 0, left + width, height);
+        int left = leftEdge + Math.max(0, (rw - width) / 2);
+        return new Rect(left, contentTop(), left + width, contentTop() + height);
     }
 
     private void animateCommentsPanelTo(float fromTranslation, float toTranslation, int panelHeight,
@@ -4346,7 +4410,7 @@ public final class MainActivity extends Activity {
         if (activePlayer != null) activePlayer.setResizeMode(resizeMode);
         if (activePlayer != null) activePlayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         commentsPanel.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        int finalPanelTop = Math.max(1, rootHeight() - panelHeight);
+        int finalPanelTop = Math.max(contentTop() + 1, contentBottom() - panelHeight);
         Rect compactFrame = commentsVideoFrameForPanelTop(finalPanelTop);
         Rect normalFrame = portraitVideoFrame();
         float normalTranslation = Math.max(0f, normalFrame.bottom - finalPanelTop);
@@ -4463,11 +4527,11 @@ public final class MainActivity extends Activity {
         if (horizontal) {
             int height = Math.max(1, Math.round(rootWidth() * 9f / 16f));
             int top = docY(24.57f);
-            return new Rect(0, top, rootWidth(), top + height);
+            return new Rect(contentLeft(), top, contentLeft() + rootWidth(), top + height);
         }
         int top = docY(DESIGN_STATUS_BOTTOM_PCT);
         int bottom = docY(89.90f);
-        return new Rect(0, top, rootWidth(), Math.max(top + 1, bottom));
+        return new Rect(contentLeft(), top, contentLeft() + rootWidth(), Math.max(top + 1, bottom));
     }
 
     private void applyPlayerFrame(Rect frame, int resizeMode) {
@@ -4553,9 +4617,7 @@ public final class MainActivity extends Activity {
     }
 
     private int commentsRootHeight() {
-        return root != null && root.getHeight() > 0
-                ? root.getHeight()
-                : getResources().getDisplayMetrics().heightPixels;
+        return rootHeight();
     }
 
     private int commentsHalfHeight() {
@@ -4573,14 +4635,29 @@ public final class MainActivity extends Activity {
         if (params == null) {
             params = new FrameLayout.LayoutParams(-1, safeHeight, Gravity.BOTTOM);
         }
+        if (params instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams frameParams = (FrameLayout.LayoutParams) params;
+            frameParams.gravity = Gravity.BOTTOM;
+            frameParams.bottomMargin = landscapeMode ? 0 : Math.max(0, systemInsetBottom);
+        }
         if (params.height != safeHeight) {
             params.height = safeHeight;
+            commentsPanel.setLayoutParams(params);
+        } else if (params instanceof FrameLayout.LayoutParams) {
             commentsPanel.setLayoutParams(params);
         }
         if (updateVideo && commentsPanel.getVisibility() == View.VISIBLE) {
             enterCommentsVideoMode();
             danmakuLayer.invalidate();
         }
+    }
+
+    private void relayoutCommentsPanelForInsets() {
+        if (commentsPanel == null) return;
+        int height = commentsPanel.getLayoutParams() == null
+                ? commentsHalfHeight()
+                : commentsPanel.getLayoutParams().height;
+        setCommentsPanelHeight(height, commentsPanel.getVisibility() == View.VISIBLE);
     }
 
     private void animateCommentsPanelHeight(int targetHeight) {
