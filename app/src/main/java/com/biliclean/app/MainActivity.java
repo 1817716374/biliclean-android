@@ -430,12 +430,18 @@ public final class MainActivity extends Activity {
     private final Player.Listener playbackListener = new Player.Listener() {
         @Override
         public void onPlaybackStateChanged(int playbackState) {
+            updateKeepScreenOn();
             if (playbackState == Player.STATE_READY && holdSwipePreviewUntilReady && !waitingForSwitchFirstFrame) {
                 releaseHeldSwipePreview();
             }
             if (playbackState == Player.STATE_ENDED && autoSlideEnabled && !switchAnimating) {
                 playNext();
             }
+        }
+
+        @Override
+        public void onIsPlayingChanged(boolean isPlaying) {
+            updateKeepScreenOn();
         }
 
         @Override
@@ -474,6 +480,7 @@ public final class MainActivity extends Activity {
             player.release();
             player = null;
         }
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         clearCurrentSurfaceHostForPlayer(currentSurfacePlayer);
         releaseWarmPlayer();
         releaseWarmAheadPlayer();
@@ -2012,18 +2019,25 @@ public final class MainActivity extends Activity {
     private void positionFollowAfterOwnerName(LinearLayout ownerTexts, TextView follow,
                                               int nameLeft, int fallbackLeft, int gap) {
         if (ownerTexts == null || follow == null || ownerTexts.getChildCount() == 0) return;
-        ownerTexts.post(() -> {
-            View ownerName = ownerTexts.getChildAt(0);
-            int nameWidth = ownerName.getWidth();
+        View ownerName = ownerTexts.getChildAt(0);
+        int nameWidth;
+        if (ownerName instanceof TextView) {
+            CharSequence text = ((TextView) ownerName).getText();
+            nameWidth = Math.round(((TextView) ownerName).getPaint()
+                    .measureText(text == null ? "" : text.toString()));
+        } else {
+            nameWidth = ownerName.getWidth();
             if (nameWidth <= 0) {
                 ownerName.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
                 nameWidth = ownerName.getMeasuredWidth();
             }
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) follow.getLayoutParams();
-            int desiredLeft = Math.max(fallbackLeft, nameLeft + nameWidth + gap);
+        }
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) follow.getLayoutParams();
+        int desiredLeft = Math.max(fallbackLeft, nameLeft + nameWidth + gap);
+        if (params.leftMargin != desiredLeft) {
             params.leftMargin = desiredLeft;
             follow.setLayoutParams(params);
-        });
+        }
     }
 
     private void applyProgressTrackLayout(FrameLayout progress, View fill) {
@@ -2308,7 +2322,10 @@ public final class MainActivity extends Activity {
 
         landscapeTitleView = text("", 21, Color.WHITE, Typeface.BOLD);
         landscapeTitleView.setSingleLine(true);
-        landscapeTitleView.setEllipsize(TextUtils.TruncateAt.END);
+        landscapeTitleView.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+        landscapeTitleView.setMarqueeRepeatLimit(-1);
+        landscapeTitleView.setHorizontallyScrolling(true);
+        landscapeTitleView.setSelected(true);
         landscapeTitleView.setGravity(Gravity.CENTER_VERTICAL);
         landscapeTitleView.setShadowLayer(5, 0, 2, 0xAA000000);
         panel.addView(landscapeTitleView, new FrameLayout.LayoutParams(-2, -2));
@@ -2317,6 +2334,7 @@ public final class MainActivity extends Activity {
         titleDivider.setGravity(Gravity.CENTER);
         titleDivider.setIncludeFontPadding(false);
         titleDivider.setShadowLayer(5, 0, 2, 0xAA000000);
+        titleDivider.setVisibility(View.GONE);
         panel.addView(titleDivider, new FrameLayout.LayoutParams(-2, -2));
 
         landscapeOwnerNameView = text("", 20, Color.WHITE, Typeface.BOLD);
@@ -2324,6 +2342,7 @@ public final class MainActivity extends Activity {
         landscapeOwnerNameView.setEllipsize(TextUtils.TruncateAt.END);
         landscapeOwnerNameView.setGravity(Gravity.CENTER_VERTICAL);
         landscapeOwnerNameView.setShadowLayer(5, 0, 2, 0xAA000000);
+        landscapeOwnerNameView.setVisibility(View.GONE);
         panel.addView(landscapeOwnerNameView, new FrameLayout.LayoutParams(-2, -2));
 
         landscapeAudienceIconView = iconImage(R.drawable.ic_bili_audience, "正在看");
@@ -2432,7 +2451,7 @@ public final class MainActivity extends Activity {
     private void applyLandscapeControlsLayout(FrameLayout panel) {
         if (panel == null || panel.getWidth() <= 0 || panel.getHeight() <= 0) return;
         setPctFrame(panel.getChildAt(0), 5.1f, 6.4f, 4.5f, 9.6f);
-        setPctFrame(landscapeTitleView, 10.9f, 7.0f, 41.4f, 7.8f);
+        setPctFrame(landscapeTitleView, 10.9f, 7.0f, 50.8f, 7.8f);
         setPctFrame(panel.getChildAt(2), 52.6f, 7.2f, 1.2f, 7.0f);
         setPctFrame(landscapeOwnerNameView, 54.3f, 7.0f, 8.0f, 7.8f);
         setPctFrame(landscapeAudienceIconView, 62.6f, 9.5f, 1.5f, 3.0f);
@@ -2987,8 +3006,11 @@ public final class MainActivity extends Activity {
         watchingView.setText(watchingText(item));
         if (lightWatchingView != null) lightWatchingView.setText(watchingText(item));
         ownerView.setText(fallback(item.ownerName, "未知 UP"));
-        if (landscapeTitleView != null) landscapeTitleView.setText(item.title);
-        if (landscapeOwnerNameView != null) landscapeOwnerNameView.setText(fallback(item.ownerName, "未知 UP"));
+        if (landscapeTitleView != null) landscapeTitleView.setText(item.title + "        ");
+        if (landscapeOwnerNameView != null) {
+            landscapeOwnerNameView.setText("");
+            landscapeOwnerNameView.setVisibility(View.GONE);
+        }
         if (landscapeWatchingTextView != null) landscapeWatchingTextView.setText(watchingText(item));
         fansView.setText(item.ownerFollowerCount > 0 ? formatCount(item.ownerFollowerCount) + "粉丝" : "净流推荐");
         refreshOwnerFollowPosition(ownerTextStack, ownerFollowButton);
@@ -3554,7 +3576,16 @@ public final class MainActivity extends Activity {
             player.play();
             showCenter("播放");
         }
+        updateKeepScreenOn();
         updateLightControlsPlaybackState();
+    }
+
+    private void updateKeepScreenOn() {
+        if (player != null && player.isPlaying()) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     private void startFastForward() {
@@ -4112,9 +4143,12 @@ public final class MainActivity extends Activity {
         if (topShade != null) topShade.setVisibility(View.GONE);
         if (rightShade != null) rightShade.setVisibility(View.GONE);
         topBar.setVisibility(View.GONE);
-        actionRail.setVisibility(View.GONE);
-        bottomInfo.setVisibility(View.GONE);
-        if (fullscreenButton != null) fullscreenButton.setVisibility(View.GONE);
+        boolean keepPortraitLowerChrome = !landscapeMode;
+        if (!keepPortraitLowerChrome) {
+            actionRail.setVisibility(View.GONE);
+            bottomInfo.setVisibility(View.GONE);
+            if (fullscreenButton != null) fullscreenButton.setVisibility(View.GONE);
+        }
         if (!hasCachedState) {
             hideCommentDetailDrawer(false);
             commentsExpanded = false;
@@ -5900,7 +5934,9 @@ public final class MainActivity extends Activity {
         int maxLeft = Math.max(0, root.getWidth() - boxWidth - dp(8));
         int maxTop = Math.max(0, root.getHeight() - boxHeight - dp(16));
         params.leftMargin = Math.max(dp(8), Math.min(maxLeft, Math.round(centerX - boxWidth / 2f)));
-        params.topMargin = Math.max(dp(88), Math.min(maxTop, Math.round(baselineY + dp(10))));
+        int minTop = landscapeMode ? dp(28) : dp(88);
+        int verticalGap = landscapeMode ? dp(2) : dp(10);
+        params.topMargin = Math.max(minTop, Math.min(maxTop, Math.round(baselineY + verticalGap)));
         danmakuActionBox.setLayoutParams(params);
         danmakuActionBox.setVisibility(View.VISIBLE);
         danmakuActionBox.bringToFront();
@@ -8187,7 +8223,7 @@ public final class MainActivity extends Activity {
 
     private void updateSeekTvEyesFromDelta(float deltaX) {
         if (Math.abs(deltaX) < 0.2f) return;
-        float target = Math.max(-1f, Math.min(1f, deltaX / Math.max(1f, dp(18))));
+        float target = Math.max(-1f, Math.min(1f, deltaX / Math.max(1f, dp(7))));
         updateSeekTvEyes(target, false);
     }
 
@@ -9081,7 +9117,7 @@ public final class MainActivity extends Activity {
                 });
                 eyeAnimator.start();
             } else {
-                eyeDirection += (target - eyeDirection) * 0.55f;
+                eyeDirection += (target - eyeDirection) * 0.85f;
                 invalidate();
             }
         }
@@ -9125,7 +9161,7 @@ public final class MainActivity extends Activity {
 
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFF333333);
-            float offset = eyeDirection * 2.35f;
+            float offset = eyeDirection * 3.65f;
             drawSeekTvEye(canvas, 6.25f + offset, 9.75f, 1.75f, 4.0f);
             drawSeekTvEye(canvas, 11.75f + offset, 9.75f, 1.8f, 4.0f);
             canvas.restore();
