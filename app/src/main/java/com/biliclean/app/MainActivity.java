@@ -109,9 +109,10 @@ public final class MainActivity extends Activity {
     private static final String PREF_QUALITY_QN = "quality_qn";
     private static final int BILI_PINK = 0xFFFF6699;
     private static final long MEDIA_CACHE_BYTES = 300L * 1024L * 1024L;
-    private static final int FORWARD_PREFETCH_BATCH_SIZE = 2;
+    private static final int INITIAL_PREFETCH_BATCH_SIZE = 2;
+    private static final int FORWARD_PREFETCH_BATCH_SIZE = 5;
     private static final int FORWARD_PREFETCH_REFILL_THRESHOLD = 2;
-    private static final int FORWARD_PREFETCH_LIMIT = 4;
+    private static final int FORWARD_PREFETCH_LIMIT = 10;
     private static final long PREFETCH_STREAM_BYTES = 2L * 1024L * 1024L;
     private static final long PROGRESS_FRAME_BUCKET_MS = 4000L;
     private static final float DESIGN_STATUS_BOTTOM_PCT = 4.95f;
@@ -184,6 +185,7 @@ public final class MainActivity extends Activity {
     private TextView swipePreviewNotice;
     private FrameLayout swipePreviewProgressBar;
     private View swipePreviewProgressFill;
+    private SeekTvThumbView swipePreviewProgressThumb;
     private DisplayModeIconButton swipePreviewFullscreenButton;
     private RailActionButton swipePreviewLikeButton;
     private RailActionButton swipePreviewCommentButton;
@@ -863,6 +865,8 @@ public final class MainActivity extends Activity {
         swipePreviewProgressFill = new View(this);
         swipePreviewProgressFill.setBackgroundColor(BILI_PINK);
         swipePreviewProgressBar.addView(swipePreviewProgressFill, new FrameLayout.LayoutParams(1, dp(3), Gravity.LEFT | Gravity.CENTER_VERTICAL));
+        swipePreviewProgressThumb = new SeekTvThumbView(this);
+        swipePreviewProgressBar.addView(swipePreviewProgressThumb, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.LEFT | Gravity.CENTER_VERTICAL));
         bottom.addView(swipePreviewProgressBar, new FrameLayout.LayoutParams(-2, -2));
 
         swipePreviewDetailPageButton = buildDetailPageButton(false);
@@ -1197,6 +1201,15 @@ public final class MainActivity extends Activity {
             if (swipePreviewNotice != null) swipePreviewNotice.setVisibility(View.GONE);
             if (swipePreviewSearch != null) swipePreviewSearch.setVisibility(View.GONE);
             if (swipePreviewProgressFill != null) updateProgressFill(swipePreviewProgressFill, 0L, 1L);
+            if (swipePreviewProgressThumb != null) {
+                swipePreviewProgressThumb.setVisibility(View.VISIBLE);
+                swipePreviewProgressThumb.setEyeDirection(0f, false);
+                swipePreviewProgressThumb.bringToFront();
+            }
+            if (swipePreviewDanmakuInputPill != null) {
+                swipePreviewDanmakuInputPill.setText(danmakuVisible ? "发个友善的弹幕见证当下" : "弹幕已隐藏");
+                swipePreviewDanmakuInputPill.setTextColor(danmakuVisible ? 0xFFE1E1E1 : 0xFFB0B4BC);
+            }
             updateDisplayModeButtonIcon(swipePreviewFullscreenButton, null, false);
             swipePreviewRail.removeAllViews();
             swipePreviewDanmaku.removeAllViews();
@@ -1219,6 +1232,15 @@ public final class MainActivity extends Activity {
             swipePreviewNotice.setText("");
         }
         if (swipePreviewProgressFill != null) updateProgressFill(swipePreviewProgressFill, 0L, Math.max(1L, item.durationSeconds * 1000L));
+        if (swipePreviewProgressThumb != null) {
+            swipePreviewProgressThumb.setVisibility(View.VISIBLE);
+            swipePreviewProgressThumb.setEyeDirection(0f, false);
+            swipePreviewProgressThumb.bringToFront();
+        }
+        if (swipePreviewDanmakuInputPill != null) {
+            swipePreviewDanmakuInputPill.setText(danmakuVisible ? "发个友善的弹幕见证当下" : "弹幕已隐藏");
+            swipePreviewDanmakuInputPill.setTextColor(danmakuVisible ? 0xFFE1E1E1 : 0xFFB0B4BC);
+        }
         updateDisplayModeButtonIcon(swipePreviewFullscreenButton, item, false);
         updateSearchEntrance(swipePreviewSearch, item, false);
         renderSwipePreviewRail(item);
@@ -1567,7 +1589,9 @@ public final class MainActivity extends Activity {
             child.setLayoutParams(params);
         }
         if (fill != null) fill.bringToFront();
-        View thumb = progress == progressBar ? progressThumb : null;
+        View thumb = progress == progressBar
+                ? progressThumb
+                : (progress == swipePreviewProgressBar ? swipePreviewProgressThumb : null);
         if (thumb != null) thumb.bringToFront();
     }
 
@@ -2447,6 +2471,7 @@ public final class MainActivity extends Activity {
         titleView.setText(item.title);
         currentClarity = clarityLabelForQuality(playInfo.quality, "自动");
         updateSearchEntrance(searchSuggestView, item, true);
+        updateDanmakuChrome();
         metaView.setText(formatCount(item.viewCount) + "播放⌄");
         noticeView.setVisibility(View.GONE);
         noticeView.setText("");
@@ -2546,11 +2571,16 @@ public final class MainActivity extends Activity {
     private void prefetchNext() {
         final int generation;
         final int existingCount;
+        final int batchSize;
+        final int limit;
         synchronized (prefetchLock) {
             existingCount = forwardPrefetchCountLocked();
+            boolean startupPrefetch = currentVideo == null;
+            batchSize = startupPrefetch ? INITIAL_PREFETCH_BATCH_SIZE : FORWARD_PREFETCH_BATCH_SIZE;
+            limit = startupPrefetch ? INITIAL_PREFETCH_BATCH_SIZE : FORWARD_PREFETCH_LIMIT;
             if (prefetchRunning
                     || existingCount > FORWARD_PREFETCH_REFILL_THRESHOLD
-                    || existingCount >= FORWARD_PREFETCH_LIMIT) {
+                    || existingCount >= limit) {
                 return;
             }
             prefetchRunning = true;
@@ -2561,8 +2591,8 @@ public final class MainActivity extends Activity {
             while (true) {
                 synchronized (prefetchLock) {
                     if (generation != prefetchGeneration
-                            || existingCount + results.size() >= FORWARD_PREFETCH_LIMIT
-                            || results.size() >= FORWARD_PREFETCH_BATCH_SIZE) {
+                            || existingCount + results.size() >= limit
+                            || results.size() >= batchSize) {
                         break;
                     }
                 }
@@ -2570,32 +2600,33 @@ public final class MainActivity extends Activity {
                     PrefetchedVideo result = fetchNextPlayable();
                     if (result == null) break;
                     results.add(result);
+                    boolean firstReady = false;
+                    synchronized (prefetchLock) {
+                        if (generation != prefetchGeneration) break;
+                        if (prefetchedVideo == null && nextStack.isEmpty()) {
+                            prefetchedVideo = result;
+                            firstReady = true;
+                        } else {
+                            nextStack.addFirst(result);
+                        }
+                        prefetchLock.notifyAll();
+                    }
+                    if (firstReady) {
+                        PrefetchedVideo ready = result;
+                        runOnUiThread(() -> {
+                            if (swipeDragging && swipePreviewForward && swipePreviewPage.getVisibility() == View.VISIBLE) {
+                                showSwipePreviewItem(ready);
+                            }
+                        });
+                    }
+                    ensureWarmNextReady(generation);
                 } catch (Exception ignored) {
                     break;
                 }
             }
-            PrefetchedVideo firstReady = null;
             synchronized (prefetchLock) {
-                if (generation == prefetchGeneration) {
-                    for (PrefetchedVideo result : results) {
-                        if (prefetchedVideo == null && nextStack.isEmpty()) {
-                            prefetchedVideo = result;
-                            if (firstReady == null) firstReady = result;
-                        } else {
-                            nextStack.addFirst(result);
-                        }
-                    }
-                }
                 prefetchRunning = false;
                 prefetchLock.notifyAll();
-            }
-            if (firstReady != null) {
-                PrefetchedVideo ready = firstReady;
-                runOnUiThread(() -> {
-                    if (swipeDragging && swipePreviewForward && swipePreviewPage.getVisibility() == View.VISIBLE) {
-                        showSwipePreviewItem(ready);
-                    }
-                });
             }
             ensureWarmNextReady(generation);
             if (!results.isEmpty()) {
@@ -2609,6 +2640,7 @@ public final class MainActivity extends Activity {
             synchronized (prefetchLock) {
                 if (generation == prefetchGeneration
                         && !prefetchRunning
+                        && currentVideo != null
                         && forwardPrefetchCountLocked() <= FORWARD_PREFETCH_REFILL_THRESHOLD) {
                     uiHandler.post(this::prefetchNext);
                 }
@@ -5000,7 +5032,7 @@ public final class MainActivity extends Activity {
             lightDanmakuButton.setBackgroundColor(Color.TRANSPARENT);
         }
         if (danmakuInputPill != null) {
-            danmakuInputPill.setText(danmakuVisible ? "发弹幕" : "弹幕已隐藏");
+            danmakuInputPill.setText(danmakuVisible ? "发个友善的弹幕见证当下" : "弹幕已隐藏");
             danmakuInputPill.setTextColor(danmakuVisible ? 0xFFE1E1E1 : 0xFFB0B4BC);
         }
         if (lightDanmakuInputPill != null) {
@@ -7310,7 +7342,11 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) fillView.getLayoutParams();
         params.width = fill;
         fillView.setLayoutParams(params);
-        SeekTvThumbView thumb = fillView == progressFill ? progressThumb : (fillView == lightProgressFill ? lightProgressThumb : null);
+        SeekTvThumbView thumb = fillView == progressFill
+                ? progressThumb
+                : (fillView == lightProgressFill
+                ? lightProgressThumb
+                : (fillView == swipePreviewProgressFill ? swipePreviewProgressThumb : null));
         updateSeekTvThumbPosition(thumb, width, fill);
     }
 
