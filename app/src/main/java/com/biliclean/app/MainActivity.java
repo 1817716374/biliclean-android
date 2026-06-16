@@ -42,6 +42,7 @@ import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.PixelCopy;
+import android.view.TextureView;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
@@ -1360,6 +1361,35 @@ public final class MainActivity extends Activity {
         showSwipePreviewItem(video);
     }
 
+    private boolean freezeSwipePreviewVideoFrame(FeedItem item) {
+        if (swipePreviewPlayerView == null || swipePreviewView == null || item == null) return false;
+        TextureView textureView = findTextureView(swipePreviewPlayerView);
+        if (textureView == null || textureView.getWidth() <= 0 || textureView.getHeight() <= 0 || !textureView.isAvailable()) {
+            return false;
+        }
+        try {
+            Bitmap frame = textureView.getBitmap(textureView.getWidth(), textureView.getHeight());
+            if (frame == null) return false;
+            applyVideoViewportLayout(swipePreviewView, item);
+            swipePreviewView.setImageBitmap(frame);
+            swipePreviewView.setVisibility(View.VISIBLE);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private TextureView findTextureView(View view) {
+        if (view instanceof TextureView) return (TextureView) view;
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            TextureView found = findTextureView(group.getChildAt(i));
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private void renderSwipePreviewRail(FeedItem item) {
         swipePreviewRail.removeAllViews();
         if (swipePreviewLikeButton == null
@@ -2538,9 +2568,10 @@ public final class MainActivity extends Activity {
             boolean warmAttachedToPreview = swipePreviewPlayerView != null
                     && swipePreviewPlayerView.getPlayer() == player;
             if (warmAttachedToPreview) {
+                boolean frozenPreviewFrame = freezeSwipePreviewVideoFrame(video.item);
                 PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
-                swipePreviewPlayerView.setVisibility(View.GONE);
-                swipePreviewView.setVisibility(View.GONE);
+                swipePreviewPlayerView.setVisibility(View.VISIBLE);
+                if (!frozenPreviewFrame) swipePreviewView.setVisibility(View.GONE);
             } else {
                 playerView.setPlayer(player);
             }
