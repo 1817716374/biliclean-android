@@ -136,6 +136,8 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private ExoPlayer player;
     private ExoPlayer warmPlayer;
+    private ExoPlayer backPlayer;
+    private PrefetchedVideo backVideo;
     private boolean warmPlayerReady;
     private boolean warmPlayerRenderedFirstFrame;
     private long warmPrepareStartedMs;
@@ -462,6 +464,7 @@ public final class MainActivity extends Activity {
             player = null;
         }
         releaseWarmPlayer();
+        releaseBackPlayer();
         if (mediaCache != null) {
             try {
                 mediaCache.release();
@@ -1323,11 +1326,13 @@ public final class MainActivity extends Activity {
 
     private void attachWarmPlayerToSwipePreview(PrefetchedVideo video) {
         if (swipePreviewPlayerView == null || swipePreviewView == null) return;
-        boolean canAttach = swipePreviewForward
-                && video != null
-                && warmPlayer != null
-                && warmVideo == video;
-        if (!canAttach) {
+        ExoPlayer previewPlayer = null;
+        if (swipePreviewForward && video != null && warmPlayer != null && warmVideo == video) {
+            previewPlayer = warmPlayer;
+        } else if (!swipePreviewForward && video != null && backPlayer != null && backVideo == video) {
+            previewPlayer = backPlayer;
+        }
+        if (previewPlayer == null) {
             if (swipePreviewPlayerView.getPlayer() != null) {
                 swipePreviewPlayerView.setPlayer(null);
             }
@@ -1336,8 +1341,8 @@ public final class MainActivity extends Activity {
             return;
         }
         applyVideoViewportLayout(swipePreviewPlayerView, video.item);
-        if (swipePreviewPlayerView.getPlayer() != warmPlayer) {
-            swipePreviewPlayerView.setPlayer(warmPlayer);
+        if (swipePreviewPlayerView.getPlayer() != previewPlayer) {
+            swipePreviewPlayerView.setPlayer(previewPlayer);
         }
         swipePreviewPlayerView.setVisibility(View.VISIBLE);
         swipePreviewView.setVisibility(View.GONE);
@@ -1463,6 +1468,8 @@ public final class MainActivity extends Activity {
     }
 
     private PrefetchedVideo peekForwardPreview() {
+        PrefetchedVideo returned = forwardReturnStack.peekLast();
+        if (returned != null) return returned;
         PrefetchedVideo next;
         synchronized (prefetchLock) {
             next = peekNextReadyLocked();
@@ -2517,6 +2524,7 @@ public final class MainActivity extends Activity {
     private void play(PrefetchedVideo video, boolean pushCurrentToHistory) {
         long playStartMs = SystemClock.uptimeMillis();
         rememberCurrentPlaybackPosition();
+        PrefetchedVideo outgoingVideo = currentVideo;
         FeedItem previousItem = currentItem;
         if (pushCurrentToHistory && currentVideo != null) {
             previousStack.addLast(currentVideo);
@@ -2553,6 +2561,7 @@ public final class MainActivity extends Activity {
         long afterUiMs = SystemClock.uptimeMillis();
 
         boolean useWarmPlayer = warmPlayer != null && warmVideo == video;
+        boolean useBackPlayer = backPlayer != null && backVideo == video;
         boolean warmWasReady = useWarmPlayer && warmPlayerReady;
         long beforeAttachMs = SystemClock.uptimeMillis();
         long afterAttachMs;
@@ -2576,10 +2585,30 @@ public final class MainActivity extends Activity {
                 playerView.setPlayer(player);
             }
             if (oldPlayer != null) {
-                releasePlayerLater(oldPlayer);
+                keepBackPlayer(oldPlayer, outgoingVideo);
             }
             player.setVolume(1f);
             android.util.Log.d("BiliClean", "use warm player bvid=" + currentItem.bvid);
+            afterAttachMs = SystemClock.uptimeMillis();
+            afterPrepareMs = afterAttachMs;
+        } else if (useBackPlayer) {
+            ExoPlayer oldPlayer = player;
+            player = backPlayer;
+            backPlayer = null;
+            backVideo = null;
+            boolean backAttachedToPreview = swipePreviewPlayerView != null
+                    && swipePreviewPlayerView.getPlayer() == player;
+            if (backAttachedToPreview) {
+                boolean frozenPreviewFrame = freezeSwipePreviewVideoFrame(video.item);
+                PlayerView.switchTargetView(player, swipePreviewPlayerView, playerView);
+                swipePreviewPlayerView.setVisibility(View.VISIBLE);
+                if (!frozenPreviewFrame) swipePreviewView.setVisibility(View.GONE);
+            } else {
+                playerView.setPlayer(player);
+            }
+            keepWarmPlayer(oldPlayer, outgoingVideo);
+            player.setVolume(1f);
+            android.util.Log.d("BiliClean", "use back player bvid=" + currentItem.bvid);
             afterAttachMs = SystemClock.uptimeMillis();
             afterPrepareMs = afterAttachMs;
         } else {
@@ -2602,7 +2631,8 @@ public final class MainActivity extends Activity {
         if (keepSwipePreview) {
             waitingForSwitchFirstFrame = true;
             uiHandler.removeCallbacks(releaseHeldSwipePreviewRunnable);
-            uiHandler.postDelayed(releaseHeldSwipePreviewRunnable, useWarmPlayer && warmWasReady ? 520 : 1600);
+            uiHandler.postDelayed(releaseHeldSwipePreviewRunnable,
+                    (useWarmPlayer && warmWasReady) || useBackPlayer ? 520 : 1600);
         } else {
             waitingForSwitchFirstFrame = false;
         }
@@ -2870,10 +2900,12 @@ public final class MainActivity extends Activity {
 
     private void ensureWarmNextReady(int generation) {
         uiHandler.post(() -> {
-            PrefetchedVideo next;
-            synchronized (prefetchLock) {
-                if (generation != prefetchGeneration) return;
-                next = peekNextReadyLocked();
+            PrefetchedVideo next = forwardReturnStack.peekLast();
+            if (next == null) {
+                synchronized (prefetchLock) {
+                    if (generation != prefetchGeneration) return;
+                    next = peekNextReadyLocked();
+                }
             }
             warmPrefetchedVideo(next, generation);
         });
@@ -2886,7 +2918,9 @@ public final class MainActivity extends Activity {
         }
         uiHandler.post(() -> {
             synchronized (prefetchLock) {
-                if (generation != prefetchGeneration || peekNextReadyLocked() != video) return;
+                if (generation != prefetchGeneration) return;
+                PrefetchedVideo returned = forwardReturnStack.peekLast();
+                if (returned != video && peekNextReadyLocked() != video) return;
             }
             if (warmVideo == video && warmPlayer != null) {
                 return;
@@ -2983,6 +3017,61 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void keepBackPlayer(ExoPlayer retainedPlayer, PrefetchedVideo video) {
+        if (retainedPlayer == null || video == null) {
+            releasePlayerLater(retainedPlayer);
+            return;
+        }
+        if (backPlayer != null && backPlayer != retainedPlayer) {
+            releasePlayerLater(backPlayer);
+        }
+        backPlayer = retainedPlayer;
+        backVideo = video;
+        try {
+            backPlayer.pause();
+            backPlayer.setVolume(0f);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void keepWarmPlayer(ExoPlayer retainedPlayer, PrefetchedVideo video) {
+        if (retainedPlayer == null || video == null) {
+            releasePlayerLater(retainedPlayer);
+            return;
+        }
+        releaseWarmPlayer();
+        warmPlayer = retainedPlayer;
+        warmVideo = video;
+        warmPlayerReady = true;
+        warmPlayerRenderedFirstFrame = true;
+        warmPrepareStartedMs = 0L;
+        try {
+            warmPlayer.pause();
+            warmPlayer.setVolume(0f);
+        } catch (Exception ignored) {
+        }
+        stageWarmPlayerInSwipePreview(video);
+        synchronized (prefetchLock) {
+            prefetchLock.notifyAll();
+        }
+    }
+
+    private void releaseBackPlayer() {
+        if (backPlayer != null) {
+            if (swipePreviewPlayerView != null && swipePreviewPlayerView.getPlayer() == backPlayer) {
+                swipePreviewPlayerView.setPlayer(null);
+                swipePreviewPlayerView.setVisibility(View.GONE);
+                if (swipePreviewView != null) swipePreviewView.setVisibility(View.GONE);
+            }
+            try {
+                backPlayer.release();
+            } catch (Exception ignored) {
+            }
+        }
+        backPlayer = null;
+        backVideo = null;
+    }
+
     private void releasePlayerLater(ExoPlayer doomedPlayer) {
         if (doomedPlayer == null) return;
         uiHandler.postDelayed(() -> {
@@ -3001,6 +3090,7 @@ public final class MainActivity extends Activity {
             prefetchLock.notifyAll();
         }
         releaseWarmPlayer();
+        releaseBackPlayer();
     }
 
     private void togglePlayPause() {
