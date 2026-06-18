@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
+import android.animation.AnimatorSet;
+import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -55,9 +57,15 @@ import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
+import android.view.ViewConfiguration;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.AnimationSet;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.view.animation.TranslateAnimation;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -7431,7 +7439,7 @@ public final class MainActivity extends Activity {
 
         one.setOnClickListener(v -> {
             if (submitting[0]) return;
-            if (selected[0] == 1) return;
+            if (selected[0] == 1 || reprint) return;
             selected[0] = 1;
             switchBiliCoinMascot(mascot, 1);
             updateBiliCoinCards(one, two, 1, reprint);
@@ -7458,7 +7466,9 @@ public final class MainActivity extends Activity {
     private boolean isBiliCoinMascotSwipeCommit(View mascot, float downY, MotionEvent event) {
         if (mascot == null || event == null) return false;
         float upDistance = downY - event.getY();
-        return upDistance >= Math.max(1f, mascot.getHeight()) * 0.07f;
+        float touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        float sevenPercent = Math.max(1f, mascot.getHeight()) * 0.07f;
+        return upDistance >= Math.max(1f, Math.min(sevenPercent, touchSlop * 1.5f));
     }
 
     private FrameLayout biliCoinCard(int count, boolean selected) {
@@ -7550,8 +7560,8 @@ public final class MainActivity extends Activity {
 
         ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
         card.setTag(animator);
-        animator.setDuration(220L);
-        animator.setInterpolator(new DecelerateInterpolator(1.7f));
+        animator.setDuration(200L);
+        animator.setInterpolator(new LinearInterpolator());
         animator.addUpdateListener(animation -> {
             float t = (float) animation.getAnimatedValue();
             FrameLayout.LayoutParams next = new FrameLayout.LayoutParams(
@@ -7626,47 +7636,36 @@ public final class MainActivity extends Activity {
     private void pulseBiliCoinMascotForSubmit(ImageView mascot, int count) {
         if (mascot == null) return;
         mascot.animate().cancel();
+        mascot.clearAnimation();
         mascot.setTranslationX(0f);
         mascot.setTranslationY(0f);
-        mascot.animate()
-                .translationY(-biliCoinSheetHeight() * 0.026f)
-                .scaleX(1.020f)
-                .scaleY(0.982f)
-                .setDuration(75L)
-                .setInterpolator(new DecelerateInterpolator(1.25f))
-                .withEndAction(() -> mascot.animate()
-                        .translationY(-biliCoinSheetHeight() * 0.006f)
-                        .scaleX(0.992f)
-                        .scaleY(1.008f)
-                        .setDuration(95L)
-                        .setInterpolator(new DecelerateInterpolator(1.1f))
-                        .withEndAction(() -> mascot.animate()
-                                .translationY(0f)
-                                .scaleX(1f)
-                                .scaleY(1f)
-                                .setDuration(105L)
-                                .setInterpolator(new DecelerateInterpolator(1.45f))
-                                .start())
-                        .start())
-                .start();
+        float offset = dp(24);
+        TranslateAnimation prepare = new TranslateAnimation(0f, 0f, 0f, offset);
+        prepare.setFillAfter(true);
+        prepare.setInterpolator(new DecelerateInterpolator());
+        prepare.setDuration(100L);
+        TranslateAnimation rebound = new TranslateAnimation(0f, 0f, 0f, -offset);
+        rebound.setInterpolator(new AccelerateInterpolator());
+        rebound.setStartOffset(100L);
+        AnimationSet set = new AnimationSet(false);
+        set.addAnimation(prepare);
+        set.addAnimation(rebound);
+        set.setFillAfter(true);
+        mascot.startAnimation(set);
     }
 
     private void pulseBiliCoinCardForSubmit(FrameLayout card, int count) {
-        if (card == null) return;
-        card.animate().cancel();
-        card.setTranslationX(0f);
-        card.setTranslationY(0f);
-        float peakY = biliCoinSheetHeight() * (count == 1 ? 0.010f : -0.013f);
-        card.animate()
-                .translationY(peakY)
-                .setDuration(85L)
-                .setInterpolator(new DecelerateInterpolator(1.15f))
-                .withEndAction(() -> card.animate()
-                        .translationY(0f)
-                        .setDuration(175L)
-                        .setInterpolator(new DecelerateInterpolator(1.45f))
-                        .start())
-                .start();
+        if (card == null || card.getChildCount() == 0) return;
+        View board = card.getChildAt(0);
+        board.animate().cancel();
+        float startY = board.getY();
+        float peakY = startY - dp(10);
+        ObjectAnimator up = ObjectAnimator.ofFloat(board, "y", startY, peakY);
+        ObjectAnimator down = ObjectAnimator.ofFloat(board, "y", peakY, startY);
+        AnimatorSet set = new AnimatorSet();
+        set.setDuration(100L);
+        set.play(down).after(up);
+        set.start();
     }
 
     private void performBiliCoin(Dialog dialog, FrameLayout panel, FrameLayout one, FrameLayout two,
@@ -7694,13 +7693,15 @@ public final class MainActivity extends Activity {
         if (mascot != null) mascot.setClickable(false);
         if (close != null) close.setClickable(false);
         pulseBiliCoinMascotForSubmit(mascot, count);
-        pulseBiliCoinCardForSubmit(selectedCard, count);
-
-        Runnable coinFly = () -> animateBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint, balance, bottom, close, count);
-        if (count == 2 && panel != null && selectedCard != null) {
-            showBiliCoinLightning(panel, selectedCard, coinFly);
-        } else if (panel != null) {
-            panel.postDelayed(coinFly, 60L);
+        Runnable coinFly = () -> {
+            pulseBiliCoinCardForSubmit(selectedCard, count);
+            animateBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint, balance, bottom, close, count);
+            if (count == 2 && panel != null && selectedCard != null) {
+                showBiliCoinLightning(panel, selectedCard);
+            }
+        };
+        if (panel != null) {
+            panel.postDelayed(coinFly, 100L);
         } else {
             coinFly.run();
         }
@@ -7731,18 +7732,20 @@ public final class MainActivity extends Activity {
         panel.addView(flyingCoin, flyParams);
 
         sourceCoin.setAlpha(0f);
-        flyingCoin.animate()
-                .translationX(0f)
-                .translationY(-biliCoinSheetHeight() * (count == 1 ? 0.132f : 0.132f))
-                .scaleX(count == 1 ? 0.82f : 0.86f)
-                .scaleY(count == 1 ? 0.82f : 0.86f)
-                .alpha(0f)
-                .setDuration(count == 1 ? 310L : 300L)
-                .setInterpolator(new DecelerateInterpolator(1.45f))
-                .start();
+        TranslateAnimation translate = new TranslateAnimation(0f, 0f, 0f, -selectedCard.getHeight());
+        translate.setInterpolator(new AccelerateInterpolator());
+        translate.setDuration(300L);
+        AlphaAnimation alpha = new AlphaAnimation(1f, 0f);
+        alpha.setStartOffset(300L);
+        alpha.setDuration(200L);
+        AnimationSet set = new AnimationSet(false);
+        set.addAnimation(translate);
+        set.addAnimation(alpha);
+        set.setFillAfter(true);
+        flyingCoin.startAnimation(set);
 
         panel.postDelayed(() -> finishBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint,
-                balance, bottom, close, flyingCoin, count), count == 1 ? 430L : 380L);
+                balance, bottom, close, flyingCoin, count), 520L);
     }
 
     private void finishBiliCoinSubmit(Dialog dialog, FrameLayout panel, View selectedCard,
@@ -7769,39 +7772,48 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void showBiliCoinLightning(FrameLayout panel, FrameLayout card, Runnable endAction) {
-        if (panel == null || card == null) {
+    private void showBiliCoinLightning(FrameLayout panel, FrameLayout card) {
+        if (panel == null || card == null) return;
+        ImageView thunder = new ImageView(this);
+        thunder.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        int width = Math.max(1, Math.round(card.getWidth() * 3.53f));
+        int height = Math.max(1, Math.round(card.getHeight() * 2.97f));
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height, Gravity.TOP | Gravity.LEFT);
+        params.leftMargin = Math.round(card.getLeft() + card.getTranslationX() + card.getWidth() * 0.5f - width * 0.5f);
+        params.topMargin = Math.round(card.getTop() + card.getTranslationY() + card.getHeight() * 0.5f - height * 0.52f);
+        panel.addView(thunder, params);
+        playBiliCoinThunderFrame(thunder, R.drawable.ic_bili_coin_thunder_1, 0.6f, () ->
+                playBiliCoinThunderFrame(thunder, R.drawable.ic_bili_coin_thunder_2, 0.6f, () ->
+                        playBiliCoinThunderFrame(thunder, R.drawable.ic_bili_coin_thunder_3, 0.1f, () -> {
+                            if (thunder.getParent() instanceof ViewGroup) {
+                                ((ViewGroup) thunder.getParent()).removeView(thunder);
+                            }
+                        })));
+    }
+
+    private void playBiliCoinThunderFrame(ImageView thunder, int drawableRes, float endAlpha, Runnable endAction) {
+        if (thunder == null) {
             if (endAction != null) endAction.run();
             return;
         }
-        BiliCoinLightningView lightning = new BiliCoinLightningView(this);
-        updateBiliCoinLightningBounds(panel, card, lightning);
-        panel.addView(lightning, new FrameLayout.LayoutParams(-1, -1));
-
-        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
-        animator.setDuration(235L);
-        animator.setInterpolator(new DecelerateInterpolator(1.2f));
-        animator.addUpdateListener(animation -> {
-            updateBiliCoinLightningBounds(panel, card, lightning);
-            lightning.setProgress((float) animation.getAnimatedValue());
-        });
+        thunder.animate().cancel();
+        thunder.setImageResource(drawableRes);
+        thunder.setVisibility(View.VISIBLE);
+        thunder.setAlpha(1f);
+        ObjectAnimator animator = ObjectAnimator.ofFloat(thunder, "alpha", 1f, endAlpha);
+        animator.setDuration(50L);
         animator.addListener(new AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(Animator animation) {
-                if (lightning.getParent() instanceof ViewGroup) {
-                    ((ViewGroup) lightning.getParent()).removeView(lightning);
-                }
+                if (endAction != null) endAction.run();
+            }
+
+            @Override
+            public void onAnimationCancel(Animator animation) {
                 if (endAction != null) endAction.run();
             }
         });
         animator.start();
-    }
-
-    private void updateBiliCoinLightningBounds(FrameLayout panel, FrameLayout card, BiliCoinLightningView lightning) {
-        if (panel == null || card == null || lightning == null) return;
-        float left = card.getLeft() + card.getTranslationX();
-        float top = card.getTop() + card.getTranslationY();
-        lightning.setCardBounds(new RectF(left, top, left + card.getWidth(), top + card.getHeight()));
     }
 
     private void performBiliCoin(Dialog dialog, int count, boolean alsoLike) {
@@ -10921,88 +10933,6 @@ public final class MainActivity extends Activity {
                 rect.set(w * 0.57f, h * 0.32f, w * 0.67f, h * 0.68f);
                 canvas.drawRoundRect(rect, h * 0.03f, h * 0.03f, paint);
             }
-        }
-    }
-
-    private final class BiliCoinLightningView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF cardBounds = new RectF();
-        private float progress;
-
-        BiliCoinLightningView(Context context) {
-            super(context);
-            setWillNotDraw(false);
-            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        }
-
-        void setCardBounds(RectF bounds) {
-            cardBounds.set(bounds);
-            invalidate();
-        }
-
-        void setProgress(float value) {
-            progress = Math.max(0f, Math.min(1f, value));
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            if (cardBounds.isEmpty()) return;
-            float phase = (float) Math.sin(progress * Math.PI);
-            int alpha = Math.max(0, Math.min(255, Math.round(phase * 210f)));
-            if (alpha <= 0) return;
-
-            float w = cardBounds.width();
-            float h = cardBounds.height();
-            RectF glow = new RectF(cardBounds);
-            glow.inset(-w * 0.28f, -h * 0.18f);
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFF49A9FF);
-            paint.setAlpha(Math.round(alpha * 0.24f));
-            canvas.drawOval(glow, paint);
-
-            Path right = new Path();
-            right.moveTo(cardBounds.right - w * 0.14f, cardBounds.top + h * 0.34f);
-            right.lineTo(cardBounds.right + w * 0.12f, cardBounds.top + h * 0.18f);
-            right.lineTo(cardBounds.right + w * 0.02f, cardBounds.top + h * 0.42f);
-            right.lineTo(cardBounds.right + w * 0.28f, cardBounds.top + h * 0.57f);
-            right.lineTo(cardBounds.right + w * 0.05f, cardBounds.top + h * 0.75f);
-
-            Path left = new Path();
-            left.moveTo(cardBounds.left + w * 0.18f, cardBounds.top + h * 0.45f);
-            left.lineTo(cardBounds.left - w * 0.10f, cardBounds.top + h * 0.26f);
-            left.lineTo(cardBounds.left + w * 0.02f, cardBounds.top + h * 0.53f);
-            left.lineTo(cardBounds.left - w * 0.24f, cardBounds.top + h * 0.68f);
-
-            Path bottom = new Path();
-            bottom.moveTo(cardBounds.left + w * 0.22f, cardBounds.bottom - h * 0.16f);
-            bottom.lineTo(cardBounds.left + w * 0.38f, cardBounds.bottom + h * 0.06f);
-            bottom.lineTo(cardBounds.left + w * 0.55f, cardBounds.bottom - h * 0.05f);
-            bottom.lineTo(cardBounds.left + w * 0.76f, cardBounds.bottom + h * 0.08f);
-
-            drawCoinElectricPath(canvas, left, alpha);
-            drawCoinElectricPath(canvas, right, alpha);
-            drawCoinElectricPath(canvas, bottom, Math.round(alpha * 0.82f));
-            paint.setAlpha(255);
-            paint.clearShadowLayer();
-        }
-
-        private void drawCoinElectricPath(Canvas canvas, Path path, int alpha) {
-            float base = Math.max(1f, Math.min(cardBounds.width(), cardBounds.height()));
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(base * 0.038f);
-            paint.setColor(0xFF3DA8FF);
-            paint.setAlpha(Math.round(alpha * 0.76f));
-            paint.setShadowLayer(base * 0.061f, 0, 0, 0xCC298BFF);
-            canvas.drawPath(path, paint);
-            paint.setStrokeWidth(Math.max(1f, base * 0.012f));
-            paint.setColor(Color.WHITE);
-            paint.setAlpha(alpha);
-            paint.clearShadowLayer();
-            canvas.drawPath(path, paint);
         }
     }
 
