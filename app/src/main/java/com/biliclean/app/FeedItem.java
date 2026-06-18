@@ -30,6 +30,7 @@ final class FeedItem {
     long favoriteCount = 0;
     long shareCount = 0;
     long danmakuCount = 0;
+    int copyright = 0;
     boolean liked = false;
 
     String identity() {

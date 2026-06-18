@@ -10,6 +10,9 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
@@ -18,6 +21,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -25,7 +29,11 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -59,6 +67,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.telephony.TelephonyManager;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
@@ -116,7 +125,13 @@ public final class MainActivity extends Activity {
     private static final float DESIGN_STATUS_BOTTOM_PCT = 4.95f;
     private static final float DESIGN_GESTURE_TOP_PCT = 96.22f;
     private static final float DESIGN_APP_HEIGHT_PCT = DESIGN_GESTURE_TOP_PCT - DESIGN_STATUS_BOTTOM_PCT;
+    private static final float COMMENT_SHEET_TOP_PCT = 38.875f;
+    private static final float COMMENT_SHEET_HEIGHT_PCT = 100f - COMMENT_SHEET_TOP_PCT;
     private static final float SWIPE_SWITCH_VELOCITY_THRESHOLD = 800f;
+    private static final int LANDSCAPE_DRAWER_NONE = 0;
+    private static final int LANDSCAPE_DRAWER_QUALITY = 1;
+    private static final int LANDSCAPE_DRAWER_COMMENTS = 2;
+    private static final int LANDSCAPE_DRAWER_SPEED = 3;
 
     private final CleanQueueRepository repository = new CleanQueueRepository();
     private final Object prefetchLock = new Object();
@@ -245,6 +260,7 @@ public final class MainActivity extends Activity {
     private RailActionButton coinButton;
     private RailActionButton favoriteButton;
     private RailActionButton shareButton;
+    private PauseOverlayView pauseOverlay;
     private TextView centerOverlay;
     private DisplayModeIconButton fullscreenButton;
     private ImageView danmakuButton;
@@ -262,6 +278,8 @@ public final class MainActivity extends Activity {
     private TextView landscapeOwnerNameView;
     private ImageView landscapeAudienceIconView;
     private TextView landscapeStatusTimeView;
+    private TextView landscapeNetworkView;
+    private LandscapeIconView landscapeBatteryIconView;
     private TextView landscapeDurationView;
     private ImageView landscapeViewerAvatarView;
     private ImageView landscapeOwnerAvatarView;
@@ -275,6 +293,10 @@ public final class MainActivity extends Activity {
     private LandscapeActionButton landscapeFavoriteButton;
     private LandscapeActionButton landscapeCoinButton;
     private LandscapeActionButton landscapeShareButton;
+    private FrameLayout landscapeSideDrawer;
+    private FrameLayout landscapeSideDrawerContent;
+    private LinearLayout landscapeSideCommentList;
+    private int landscapeSideDrawerMode;
     private FrameLayout progressBubbleCard;
     private final Runnable hideProgressBubbleRunnable = () -> {
         if (progressBubbleCard != null) progressBubbleCard.setVisibility(View.GONE);
@@ -328,7 +350,10 @@ public final class MainActivity extends Activity {
     private long pendingProgressFramePositionMs = -1L;
     private boolean progressDragging;
     private long progressDragPositionMs = -1L;
+    private long progressStartPositionMs = -1L;
+    private float progressStartTouchX = Float.NaN;
     private float progressLastTouchX = Float.NaN;
+    private float seekTvEyeTarget;
     private String currentClarity = "自动";
     private int globalPreferredQn = 80;
     private String timerCloseOption = "关闭";
@@ -365,6 +390,8 @@ public final class MainActivity extends Activity {
     private boolean commentDetailOpen;
     private int commentsGeneration;
     private int commentDetailGeneration;
+    private double coinBalanceCache = -1d;
+    private long coinBalanceCacheTimeMs;
     private String commentsNextOffset = "";
     private String commentsVideoKey = "";
     private final List<CommentItem> loadedComments = new ArrayList<>();
@@ -406,6 +433,17 @@ public final class MainActivity extends Activity {
     private boolean waitingForSwitchFirstFrame;
     private boolean instantSwipePreviewRelease;
     private boolean consumeDanmakuUnfreezeTouch;
+    private int landscapeBatteryPercent = 100;
+    private boolean landscapeBatteryCharging;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private boolean networkCallbackRegistered;
+
+    private final BroadcastReceiver batteryStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            updateBatteryStatus(intent);
+        }
+    };
 
     private final Runnable releaseHeldSwipePreviewRunnable = new Runnable() {
         @Override
@@ -446,6 +484,7 @@ public final class MainActivity extends Activity {
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
             updateKeepScreenOn();
+            updatePausedOverlay();
         }
 
         @Override
@@ -468,6 +507,7 @@ public final class MainActivity extends Activity {
         repository.apiClient().setAuthCookie(prefs.getString(PREF_COOKIE, ""));
         globalPreferredQn = prefs.getInt(PREF_QUALITY_QN, 80);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        registerLandscapeStatusReceivers();
 
         buildUi();
         initPlayer();
@@ -479,6 +519,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacksAndMessages(null);
+        unregisterLandscapeStatusReceivers();
         recycleSwipeVelocityTracker();
         if (player != null) {
             player.release();
@@ -525,6 +566,10 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (landscapeSideDrawer != null && landscapeSideDrawer.getVisibility() == View.VISIBLE) {
+            hideLandscapeSideDrawer(true);
+            return;
+        }
         if (commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE) {
             if (commentDetailOpen) {
                 hideCommentDetailDrawer(true);
@@ -670,12 +715,20 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(-1, panelHeight, Gravity.BOTTOM);
         root.addView(commentsPanel, panelParams);
 
+        pauseOverlay = new PauseOverlayView(this);
+        pauseOverlay.setVisibility(View.GONE);
+        pageLayer.addView(pauseOverlay, new FrameLayout.LayoutParams(-1, -1));
+
         centerOverlay = text("暂停", 26, Color.WHITE, Typeface.BOLD);
         centerOverlay.setGravity(Gravity.CENTER);
         centerOverlay.setVisibility(View.GONE);
         centerOverlay.setBackground(rounded(0x66000000, dp(32)));
         FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(dp(190), dp(76), Gravity.CENTER);
         root.addView(centerOverlay, overlayParams);
+
+        landscapeSideDrawer = buildLandscapeSideDrawer();
+        landscapeSideDrawer.setVisibility(View.GONE);
+        root.addView(landscapeSideDrawer, new FrameLayout.LayoutParams(-1, -1));
 
         progressBubbleCard = new FrameLayout(this);
         progressBubbleCard.setVisibility(View.GONE);
@@ -1008,6 +1061,7 @@ public final class MainActivity extends Activity {
                 landscapeVerticalAdjustMode = 0;
                 landscapeProgressStartPositionMs = -1L;
                 landscapeProgressLastX = Float.NaN;
+                resetPortraitProgressDragState();
                 touchMovedBeyondTapSlop = false;
                 cancelSwipeChromeAnimation();
                 pageLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -1050,6 +1104,7 @@ public final class MainActivity extends Activity {
                         landscapeProgressStartX = touchDownX;
                         landscapeProgressLastX = touchDownX;
                         landscapeProgressStartPositionMs = player == null ? -1L : player.getCurrentPosition();
+                        resetSeekTvEyes(false);
                         stopFastForward();
                         hideDanmakuActionBox();
                         setLightControlsVisible(true);
@@ -1061,6 +1116,26 @@ public final class MainActivity extends Activity {
                         return true;
                     }
                     gestureDetector.onTouchEvent(event);
+                    return true;
+                }
+                if (progressDragging) {
+                    previewPortraitVideoProgressAt(event.getRawX());
+                    return true;
+                }
+                if (!progressDragging
+                        && Math.abs(dx) > dp(22)
+                        && Math.abs(dx) > Math.abs(dy) * 1.15f) {
+                    progressDragging = true;
+                    progressStartTouchX = touchDownX;
+                    progressLastTouchX = touchDownX;
+                    progressStartPositionMs = player == null ? -1L : player.getCurrentPosition();
+                    resetSeekTvEyes(false);
+                    stopFastForward();
+                    hideDanmakuActionBox();
+                    MotionEvent cancelEvent = MotionEvent.obtain(event.getDownTime(), event.getEventTime(), MotionEvent.ACTION_CANCEL, event.getX(), event.getY(), event.getMetaState());
+                    gestureDetector.onTouchEvent(cancelEvent);
+                    cancelEvent.recycle();
+                    previewPortraitVideoProgressAt(event.getRawX());
                     return true;
                 }
                 if (!swipeDragging && Math.abs(dy) > dp(18)) {
@@ -1104,7 +1179,7 @@ public final class MainActivity extends Activity {
                     commitLandscapeProgressAt(event.getRawX());
                     landscapeProgressDragging = false;
                     landscapeProgressLastX = Float.NaN;
-                    updateSeekTvEyes(0f, true);
+                    resetSeekTvEyes(true);
                     hideProgressBubbleLater(800);
                     scheduleLightControlsHide(1100);
                     resetSwipeChrome();
@@ -1115,6 +1190,16 @@ public final class MainActivity extends Activity {
                 if (landscapeVerticalAdjusting) {
                     landscapeVerticalAdjusting = false;
                     landscapeVerticalAdjustMode = 0;
+                    resetSwipeChrome();
+                    pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
+                    swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
+                    return true;
+                }
+                if (progressDragging) {
+                    commitPortraitVideoProgressAt(event.getRawX());
+                    resetPortraitProgressDragState();
+                    resetSeekTvEyes(true);
+                    hideProgressBubbleLater(800);
                     resetSwipeChrome();
                     pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
                     swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -1139,7 +1224,7 @@ public final class MainActivity extends Activity {
                     hideProgressBubbleLater(0);
                     landscapeProgressDragging = false;
                     landscapeProgressLastX = Float.NaN;
-                    updateSeekTvEyes(0f, true);
+                    resetSeekTvEyes(true);
                     scheduleLightControlsHide(0);
                     resetSwipeChrome();
                     pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -1160,6 +1245,15 @@ public final class MainActivity extends Activity {
             swipeDragging = false;
             return true;
         }
+                if (progressDragging) {
+                    hideProgressBubbleLater(0);
+                    resetPortraitProgressDragState();
+                    resetSeekTvEyes(true);
+                    resetSwipeChrome();
+                    pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
+                    swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
+                    return true;
+                }
                 resetSwipeChrome();
                 pageLayer.setLayerType(View.LAYER_TYPE_NONE, null);
                 swipePreviewPage.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -2144,6 +2238,27 @@ public final class MainActivity extends Activity {
         return Math.max(1, Math.round(rootHeight() * pct / DESIGN_APP_HEIGHT_PCT));
     }
 
+    private int commentWidth(float pct) {
+        return Math.max(1, Math.round(rootWidth() * pct / 100f));
+    }
+
+    private int commentHeight(float pct) {
+        return Math.max(1, Math.round(rawRootHeight() * pct / 100f));
+    }
+
+    private int commentPanelHeight(float pct) {
+        int height = commentsPanel != null && commentsPanel.getLayoutParams() != null
+                ? commentsPanel.getLayoutParams().height
+                : commentsHalfHeight();
+        return Math.max(1, Math.round(height * pct / 100f));
+    }
+
+    private int commentSp(float widthPct, int minSp, int maxSp) {
+        float scaledDensity = Math.max(0.1f, getResources().getDisplayMetrics().scaledDensity);
+        int sp = Math.round((rootWidth() * widthPct / 100f) / scaledDensity);
+        return Math.max(minSp, Math.min(maxSp, sp));
+    }
+
     private int rootWidth() {
         return Math.max(1, contentRight() - contentLeft());
     }
@@ -2235,7 +2350,7 @@ public final class MainActivity extends Activity {
         shareButton.setContentDescription("分享");
         likeButton.setOnTouchListener(this::handleLikeButtonTouch);
         commentButton.setOnClickListener(v -> showComments());
-        coinButton.setOnClickListener(v -> showCoinSheet());
+        coinButton.setOnClickListener(v -> showBiliCoinSheet());
         favoriteButton.setOnClickListener(v -> handleFavoriteClick());
         shareButton.setOnClickListener(v -> showShareSheet());
 
@@ -2368,6 +2483,7 @@ public final class MainActivity extends Activity {
         panel.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 applyLandscapeControlsLayout((FrameLayout) v);
+                applyVideoResizeMode();
             }
         });
 
@@ -2421,13 +2537,14 @@ public final class MainActivity extends Activity {
         landscapeStatusTimeView.setShadowLayer(4, 0, 1, 0x99000000);
         panel.addView(landscapeStatusTimeView, new FrameLayout.LayoutParams(-2, -2));
 
-        TextView wifi = pillText("wifi", 13, Color.WHITE, 0x22000000);
-        wifi.setGravity(Gravity.CENTER);
-        wifi.setBackground(strokeRounded(0x88FFFFFF, 0x22000000, dp(13), dp(1)));
-        panel.addView(wifi, new FrameLayout.LayoutParams(-2, -2));
+        landscapeNetworkView = pillText(currentNetworkLabel(), 13, Color.WHITE, 0x22000000);
+        landscapeNetworkView.setGravity(Gravity.CENTER);
+        landscapeNetworkView.setBackground(strokeRounded(0x88FFFFFF, 0x22000000, dp(13), dp(1)));
+        panel.addView(landscapeNetworkView, new FrameLayout.LayoutParams(-2, -2));
 
-        LandscapeIconView battery = new LandscapeIconView(this, LandscapeIconView.BATTERY);
-        panel.addView(battery, new FrameLayout.LayoutParams(-2, -2));
+        landscapeBatteryIconView = new LandscapeIconView(this, LandscapeIconView.BATTERY);
+        landscapeBatteryIconView.setBatteryState(landscapeBatteryPercent, landscapeBatteryCharging);
+        panel.addView(landscapeBatteryIconView, new FrameLayout.LayoutParams(-2, -2));
 
         landscapeFavoriteButton = null;
         landscapeCoinButton = null;
@@ -2478,7 +2595,7 @@ public final class MainActivity extends Activity {
         });
         panel.addView(lightDanmakuButton, new FrameLayout.LayoutParams(-2, -2));
 
-        lightDanmakuInputPill = pillText("发弹幕", 16, 0xFF5D626B, 0xDDE6E6E6);
+        lightDanmakuInputPill = pillText("发弹幕", 16, 0xFF5D626B, 0xDDDADADA);
         lightDanmakuInputPill.setGravity(Gravity.CENTER_VERTICAL);
         lightDanmakuInputPill.setPadding(dp(24), 0, dp(24), 0);
         lightDanmakuInputPill.setContentDescription("发送弹幕");
@@ -2488,13 +2605,23 @@ public final class MainActivity extends Activity {
         landscapeSpeedView = text("倍速", 17, Color.WHITE, Typeface.BOLD);
         landscapeSpeedView.setGravity(Gravity.CENTER);
         landscapeSpeedView.setShadowLayer(4, 0, 1, 0x99000000);
-        landscapeSpeedView.setOnClickListener(v -> showMoreSheet());
+        landscapeSpeedView.setOnClickListener(v -> {
+            if (landscapeMode) showLandscapeSpeedDrawer();
+            else showMoreSheet();
+        });
         panel.addView(landscapeSpeedView, new FrameLayout.LayoutParams(-2, -2));
 
         landscapeClarityView = text(currentClarity, 17, Color.WHITE, Typeface.BOLD);
         landscapeClarityView.setGravity(Gravity.CENTER);
+        landscapeClarityView.setSingleLine(true);
+        landscapeClarityView.setMaxLines(1);
+        landscapeClarityView.setEllipsize(TextUtils.TruncateAt.END);
+        landscapeClarityView.setIncludeFontPadding(false);
         landscapeClarityView.setShadowLayer(4, 0, 1, 0x99000000);
-        landscapeClarityView.setOnClickListener(v -> showClaritySheet());
+        landscapeClarityView.setOnClickListener(v -> {
+            if (landscapeMode) showLandscapeQualityDrawer();
+            else showClaritySheet();
+        });
         panel.addView(landscapeClarityView, new FrameLayout.LayoutParams(-2, -2));
 
         landscapeLikeButton = new LandscapeActionButton(this, R.drawable.ic_rail_like);
@@ -2502,36 +2629,491 @@ public final class MainActivity extends Activity {
         landscapeLikeButton.setOnClickListener(v -> likeCurrentFromGesture());
         panel.addView(landscapeLikeButton, new FrameLayout.LayoutParams(-2, -2));
 
-        landscapeCommentButton = new LandscapeActionButton(this, R.drawable.ic_rail_comment);
+        landscapeCommentButton = new LandscapeActionButton(this, R.drawable.ic_bili_rail_comment);
         landscapeCommentButton.setIconColor(Color.WHITE);
-        landscapeCommentButton.setOnClickListener(v -> showComments());
+        landscapeCommentButton.setOnClickListener(v -> {
+            if (landscapeMode) showLandscapeCommentsDrawer();
+            else showComments();
+        });
         panel.addView(landscapeCommentButton, new FrameLayout.LayoutParams(-2, -2));
 
         return panel;
     }
 
+    private FrameLayout buildLandscapeSideDrawer() {
+        FrameLayout drawer = new FrameLayout(this);
+        drawer.setBackgroundColor(0x33000000);
+        drawer.setClickable(true);
+        drawer.setOnClickListener(v -> hideLandscapeSideDrawer(true));
+
+        landscapeSideDrawerContent = new FrameLayout(this);
+        landscapeSideDrawerContent.setClickable(true);
+        landscapeSideDrawerContent.setOnClickListener(v -> {
+        });
+        drawer.addView(landscapeSideDrawerContent, new FrameLayout.LayoutParams(1, -1, Gravity.RIGHT));
+        return drawer;
+    }
+
+    private void showLandscapeQualityDrawer() {
+        if (!landscapeMode || landscapeSideDrawer == null || landscapeSideDrawerContent == null) {
+            showClaritySheet();
+            return;
+        }
+        prepareLandscapeSideDrawer(LANDSCAPE_DRAWER_QUALITY, 28.0f, 0x00000000);
+
+        int w = Math.max(1, root.getWidth());
+        int h = Math.max(1, root.getHeight());
+        int leftInset = Math.max(1, Math.round(w * 0.010f));
+        int rightInset = Math.max(1, Math.round(w * 0.020f));
+
+        List<QualityOption> options = currentVideo == null || currentVideo.playInfo == null
+                ? java.util.Collections.emptyList()
+                : currentVideo.playInfo.qualityOptions;
+        List<QualityOption> rows = new ArrayList<>();
+        if (options != null && !options.isEmpty()) {
+            Set<Integer> seen = new HashSet<>();
+            for (QualityOption option : options) {
+                if (option == null || option.qn <= 0 || !seen.add(option.qn)) continue;
+                rows.add(option);
+            }
+        }
+        if (rows.isEmpty()) {
+            int[] fallbackQn = new int[]{120, 116, 112, 80, 64, 32, 16};
+            int currentQn = currentVideo == null || currentVideo.playInfo == null
+                    ? globalPreferredQn
+                    : currentVideo.playInfo.quality;
+            for (int qn : fallbackQn) {
+                QualityOption option = new QualityOption();
+                option.qn = qn;
+                option.playable = true;
+                option.selected = qn == currentQn;
+                rows.add(option);
+            }
+        }
+
+        int totalRows = rows.size() + 1;
+        int rowHeight = Math.max(1, Math.round(h * (totalRows <= 2 ? 0.150f : 0.105f)));
+        int gap = Math.max(1, Math.round(h * (totalRows <= 2 ? 0.028f : 0.018f)));
+        int top = totalRows <= 2
+                ? Math.max(1, Math.round(h * 0.336f))
+                : Math.max(1, Math.round((h - totalRows * rowHeight - (totalRows - 1) * gap) / 2f));
+
+        TextView auto = landscapeQualityRow("\u81EA\u52A8", globalPreferredQn <= 0, true);
+        auto.setOnClickListener(v -> {
+            hideLandscapeSideDrawer(true);
+            switchClarity("\u81EA\u52A8", 0);
+        });
+        addLandscapeQualityRow(auto, top, rowHeight, leftInset, rightInset);
+
+        int y = top + rowHeight + gap;
+        int currentQn = currentVideo == null || currentVideo.playInfo == null ? 0 : currentVideo.playInfo.quality;
+        for (QualityOption option : rows) {
+            final QualityOption selectedOption = option;
+            String label = landscapeQualityLabel(selectedOption);
+            boolean selected = selectedOption.selected || (selectedOption.qn > 0 && selectedOption.qn == currentQn);
+            TextView row = landscapeQualityRow(label, selected, selectedOption.playable);
+            row.setOnClickListener(v -> {
+                hideLandscapeSideDrawer(true);
+                switchClarity(label, selectedOption.qn);
+            });
+            addLandscapeQualityRow(row, y, rowHeight, leftInset, rightInset);
+            y += rowHeight + gap;
+        }
+
+        showLandscapeSideDrawerAnimated();
+    }
+
+    private void addLandscapeQualityRow(View row, int top, int height, int leftInset, int rightInset) {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, height);
+        params.leftMargin = leftInset;
+        params.rightMargin = rightInset;
+        params.topMargin = top;
+        landscapeSideDrawerContent.addView(row, params);
+    }
+
+    private TextView landscapeQualityRow(String label, boolean selected, boolean playable) {
+        TextView row = text(label, 20, selected ? BILI_PINK : (playable ? 0xFFEDEFF5 : 0xFF767A83), Typeface.NORMAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setSingleLine(true);
+        row.setMaxLines(1);
+        row.setEllipsize(TextUtils.TruncateAt.END);
+        row.setIncludeFontPadding(false);
+        row.setPadding(dp(40), 0, dp(18), 0);
+        row.setBackground(rounded(0xEE24252B, dp(10)));
+        row.setClickable(true);
+        return row;
+    }
+
+    private String landscapeQualityLabel(QualityOption option) {
+        if (option == null) return currentClarity;
+        return landscapeQualityShortLabel(option.qn, firstNonEmpty(option.title, option.displayDesc, currentClarity));
+    }
+
+    private String landscapeQualityShortLabel(int qn, String fallback) {
+        switch (qn) {
+            case 127: return "8K";
+            case 126: return "\u675C\u6BD4";
+            case 125: return "HDR";
+            case 120: return "4K";
+            case 116: return "1080P60";
+            case 112: return "1080P+";
+            case 80: return "1080P";
+            case 64: return "720P";
+            case 32: return "480P";
+            case 16: return "360P";
+            default:
+                if (fallback == null || fallback.trim().isEmpty()) return "自动";
+                int space = fallback.indexOf(' ');
+                return space > 0 ? fallback.substring(0, space) : fallback;
+        }
+    }
+
+    private void showLandscapeSpeedDrawer() {
+        if (!landscapeMode || landscapeSideDrawer == null || landscapeSideDrawerContent == null) {
+            showSpeedSheet();
+            return;
+        }
+        prepareLandscapeSideDrawer(LANDSCAPE_DRAWER_SPEED, 22.0f, 0x00000000);
+
+        float[] speeds = new float[]{2.0f, 1.5f, 1.25f, 1.0f, 0.75f, 0.5f};
+        int h = Math.max(1, root.getHeight());
+        int rowHeight = Math.max(1, Math.round(h * 0.153f));
+        int top = Math.max(1, Math.round(h * 0.072f));
+        for (int i = 0; i < speeds.length; i++) {
+            float speed = speeds[i];
+            TextView row = text(landscapeSpeedLabel(speed),
+                    21,
+                    Math.abs(playbackSpeed - speed) < 0.01f ? BILI_PINK : Color.WHITE,
+                    Typeface.NORMAL);
+            row.setGravity(Gravity.CENTER);
+            row.setClickable(true);
+            row.setOnClickListener(v -> {
+                playbackSpeed = speed;
+                if (player != null && !fastForwarding) player.setPlaybackSpeed(playbackSpeed);
+                hideLandscapeSideDrawer(true);
+                updateLightControlsPlaybackState();
+            });
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, rowHeight);
+            params.topMargin = top + i * rowHeight;
+            landscapeSideDrawerContent.addView(row, params);
+        }
+
+        showLandscapeSideDrawerAnimated();
+    }
+
+    private String landscapeSpeedLabel(float speed) {
+        if (Math.abs(speed - 1.25f) < 0.01f) return "1.25X";
+        return String.format(Locale.US, "%.1fX", speed);
+    }
+
+    private void showLandscapeCommentsDrawer() {
+        if (!landscapeMode || landscapeSideDrawer == null || landscapeSideDrawerContent == null) {
+            showComments();
+            return;
+        }
+        hideComments(false);
+        prepareLandscapeSideDrawer(LANDSCAPE_DRAWER_COMMENTS, 39.0f, 0xF21B1C20);
+
+        FrameLayout header = new FrameLayout(this);
+        TextView title = text(formatCount(currentItem == null ? 0 : currentItem.replyCount) + "\u6761\u8BC4\u8BBA",
+                18, 0xFF8F9299, Typeface.NORMAL);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams titleParams = new FrameLayout.LayoutParams(-2, -1, Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        titleParams.leftMargin = dp(28);
+        header.addView(title, titleParams);
+
+        TextView sort = text("\u2630  " + (commentsByTime ? "\u6309\u65F6\u95F4" : "\u6309\u70ED\u5EA6"),
+                17, 0xFF8F9299, Typeface.NORMAL);
+        sort.setGravity(Gravity.CENTER_VERTICAL);
+        sort.setOnClickListener(v -> {
+            commentsByTime = !commentsByTime;
+            loadComments(false);
+            showLandscapeCommentsDrawer();
+        });
+        FrameLayout.LayoutParams sortParams = new FrameLayout.LayoutParams(-2, -1, Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        sortParams.rightMargin = dp(28);
+        header.addView(sort, sortParams);
+        landscapeSideDrawerContent.addView(header, new FrameLayout.LayoutParams(-1, dp(76), Gravity.TOP));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        landscapeSideCommentList = new LinearLayout(this);
+        landscapeSideCommentList.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(landscapeSideCommentList, new ScrollView.LayoutParams(-1, -2));
+        FrameLayout.LayoutParams scrollParams = new FrameLayout.LayoutParams(-1, -1);
+        scrollParams.topMargin = dp(76);
+        scrollParams.bottomMargin = dp(92);
+        landscapeSideDrawerContent.addView(scroll, scrollParams);
+
+        TextView input = pillText(currentCommentControl.rootHint(), 17, 0xFF8A8D94, 0xFF292B30);
+        input.setGravity(Gravity.CENTER_VERTICAL);
+        input.setPadding(dp(28), 0, dp(20), 0);
+        FrameLayout.LayoutParams inputParams = new FrameLayout.LayoutParams(-1, dp(56), Gravity.BOTTOM);
+        inputParams.leftMargin = dp(30);
+        inputParams.rightMargin = dp(30);
+        inputParams.bottomMargin = dp(18);
+        landscapeSideDrawerContent.addView(input, inputParams);
+
+        renderLandscapeCommentDrawer();
+        String currentKey = currentItem == null ? "" : videoIdentity(currentItem);
+        boolean hasCachedState = currentKey.equals(commentsVideoKey) && !loadedComments.isEmpty();
+        if (!hasCachedState && !commentsLoading) {
+            setLandscapeCommentStatus("\u52A0\u8F7D\u8BC4\u8BBA...");
+            loadComments(false);
+        }
+        showLandscapeSideDrawerAnimated();
+    }
+
+    private void prepareLandscapeSideDrawer(int mode, float widthPct, int backgroundColor) {
+        landscapeSideDrawerMode = mode;
+        uiHandler.removeCallbacks(hideLightControlsRunnable);
+        setLightControlsVisible(false);
+        hideDanmakuActionBox();
+        dismissActiveBottomSheet();
+        landscapeSideDrawerContent.removeAllViews();
+        landscapeSideDrawerContent.setBackgroundColor(backgroundColor);
+        int width = Math.max(1, Math.round(rootWidth() * widthPct / 100f));
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, -1, Gravity.RIGHT);
+        landscapeSideDrawerContent.setLayoutParams(params);
+        landscapeSideDrawerContent.setTranslationX(width);
+    }
+
+    private void showLandscapeSideDrawerAnimated() {
+        if (landscapeSideDrawer == null || landscapeSideDrawerContent == null) return;
+        landscapeSideDrawer.setVisibility(View.VISIBLE);
+        landscapeSideDrawer.bringToFront();
+        landscapeSideDrawerContent.animate().cancel();
+        landscapeSideDrawerContent.animate()
+                .translationX(0f)
+                .setDuration(220)
+                .setInterpolator(swipeInterpolator)
+                .start();
+    }
+
+    private void hideLandscapeSideDrawer(boolean animate) {
+        if (landscapeSideDrawer == null || landscapeSideDrawer.getVisibility() != View.VISIBLE) return;
+        landscapeSideDrawerMode = LANDSCAPE_DRAWER_NONE;
+        if (landscapeSideDrawerContent == null || !animate) {
+            landscapeSideDrawer.setVisibility(View.GONE);
+            return;
+        }
+        int width = Math.max(1, landscapeSideDrawerContent.getWidth());
+        landscapeSideDrawerContent.animate().cancel();
+        landscapeSideDrawerContent.animate()
+                .translationX(width)
+                .setDuration(180)
+                .setInterpolator(swipeInterpolator)
+                .withEndAction(() -> {
+                    landscapeSideDrawer.setVisibility(View.GONE);
+                    landscapeSideDrawerContent.removeAllViews();
+                    landscapeSideDrawerContent.setTranslationX(0f);
+                    landscapeSideCommentList = null;
+                })
+                .start();
+    }
+
+    private void renderLandscapeCommentDrawer() {
+        if (landscapeSideCommentList == null) return;
+        landscapeSideCommentList.removeAllViews();
+        if (loadedComments.isEmpty()) {
+            setLandscapeCommentStatus(commentsLoading ? "\u52A0\u8F7D\u8BC4\u8BBA..." : "\u6682\u65E0\u8BC4\u8BBA");
+            return;
+        }
+        int count = Math.min(loadedComments.size(), 12);
+        for (int i = 0; i < count; i++) {
+            landscapeSideCommentList.addView(buildLandscapeCommentRow(loadedComments.get(i)), new LinearLayout.LayoutParams(-1, -2));
+        }
+    }
+
+    private void setLandscapeCommentStatus(String value) {
+        if (landscapeSideCommentList == null) return;
+        landscapeSideCommentList.removeAllViews();
+        TextView status = text(value, 16, 0xFF8F9299, Typeface.NORMAL);
+        status.setGravity(Gravity.CENTER);
+        status.setPadding(0, dp(80), 0, 0);
+        landscapeSideCommentList.addView(status, new LinearLayout.LayoutParams(-1, dp(180)));
+    }
+
+    private View buildLandscapeCommentRow(CommentItem comment) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(28), dp(18), dp(22), dp(18));
+
+        int avatarSize = dp(46);
+        FrameLayout avatarBox = new FrameLayout(this);
+        avatarBox.setBackground(rounded(0xFF383A40, avatarSize / 2));
+        TextView avatarFallback = text(userInitial(comment.user), 13, 0xFF9CA0A8, Typeface.BOLD);
+        avatarFallback.setGravity(Gravity.CENTER);
+        avatarBox.addView(avatarFallback, new FrameLayout.LayoutParams(-1, -1));
+        ImageView avatar = new ImageView(this);
+        avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        makeCircular(avatar);
+        avatarBox.addView(avatar, new FrameLayout.LayoutParams(-1, -1));
+        loadImageInto(comment.face, avatar);
+        LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(avatarSize, avatarSize);
+        avatarParams.rightMargin = dp(18);
+        row.addView(avatarBox, avatarParams);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout nameLine = new LinearLayout(this);
+        nameLine.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = text(fallback(comment.user, "\u8BE5\u7528\u6237\u672A\u6CE8\u9500\u55B5"),
+                16, comment.vip ? BILI_PINK : 0xFF8F9299, Typeface.NORMAL);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        nameLine.addView(name, new LinearLayout.LayoutParams(0, dp(28), 1));
+        int levelRes = levelIconRes(comment.level);
+        if (levelRes != 0) {
+            ImageView level = iconImage(levelRes, comment.level);
+            LinearLayout.LayoutParams levelParams = new LinearLayout.LayoutParams(dp(42), dp(20));
+            levelParams.leftMargin = dp(8);
+            nameLine.addView(level, levelParams);
+        }
+        body.addView(nameLine, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView message = text(displayCommentMessage(comment.message), 18, 0xFFE8EAF0, Typeface.NORMAL);
+        message.setLineSpacing(dp(3), 1.02f);
+        message.setMaxLines(3);
+        message.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams messageParams = new LinearLayout.LayoutParams(-1, -2);
+        messageParams.topMargin = dp(8);
+        body.addView(message, messageParams);
+
+        LinearLayout meta = new LinearLayout(this);
+        meta.setGravity(Gravity.CENTER_VERTICAL);
+        TextView left = text(comment.ctimeText + "  \u56DE\u590D", 14, 0xFF555860, Typeface.NORMAL);
+        meta.addView(left, new LinearLayout.LayoutParams(0, dp(34), 1));
+        LinearLayout voteStrip = new LinearLayout(this);
+        voteStrip.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+
+        ImageView likeIcon = iconImage(R.drawable.ic_bili_comment_like, "like");
+        TextView likeCount = text(formatCount(comment.like), 15, 0xFF9EA1A8, Typeface.NORMAL);
+        likeCount.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView dislikeIcon = iconImage(R.drawable.ic_bili_comment_dislike, "dislike");
+        View.OnClickListener likeListener = v -> {
+            if (comment.liked) {
+                comment.liked = false;
+                comment.like = Math.max(0, comment.like - 1);
+            } else {
+                if (comment.disliked) comment.disliked = false;
+                comment.liked = true;
+                comment.like += 1;
+            }
+            syncCommentVoteState(comment);
+            updateCommentVoteState(comment, likeIcon, likeCount, dislikeIcon);
+            renderLandscapeCommentDrawer();
+        };
+        likeIcon.setOnClickListener(likeListener);
+        likeCount.setOnClickListener(likeListener);
+        LinearLayout.LayoutParams likeIconParams = new LinearLayout.LayoutParams(dp(23), dp(23));
+        voteStrip.addView(likeIcon, likeIconParams);
+        LinearLayout.LayoutParams likeTextParams = new LinearLayout.LayoutParams(dp(52), dp(34));
+        likeTextParams.leftMargin = dp(7);
+        voteStrip.addView(likeCount, likeTextParams);
+
+        View.OnClickListener dislikeListener = v -> {
+            if (comment.disliked) {
+                comment.disliked = false;
+            } else {
+                if (comment.liked) {
+                    comment.liked = false;
+                    comment.like = Math.max(0, comment.like - 1);
+                }
+                comment.disliked = true;
+            }
+            syncCommentVoteState(comment);
+            updateCommentVoteState(comment, likeIcon, likeCount, dislikeIcon);
+            renderLandscapeCommentDrawer();
+        };
+        dislikeIcon.setOnClickListener(dislikeListener);
+        LinearLayout.LayoutParams dislikeParams = new LinearLayout.LayoutParams(dp(23), dp(23));
+        dislikeParams.leftMargin = dp(8);
+        voteStrip.addView(dislikeIcon, dislikeParams);
+        updateCommentVoteState(comment, likeIcon, likeCount, dislikeIcon);
+        registerCommentVoteBinding(comment, likeIcon, likeCount, dislikeIcon);
+        meta.addView(voteStrip, new LinearLayout.LayoutParams(dp(122), dp(34)));
+        LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(-1, -2);
+        metaParams.topMargin = dp(10);
+        body.addView(meta, metaParams);
+
+        if (!comment.previewReplies.isEmpty() || comment.replyCount > 0) {
+            LinearLayout replies = new LinearLayout(this);
+            replies.setOrientation(LinearLayout.VERTICAL);
+            replies.setPadding(dp(18), dp(12), dp(18), dp(12));
+            replies.setBackground(rounded(0xCC111216, dp(8)));
+            int replyCount = Math.min(comment.previewReplies.size(), 2);
+            for (int i = 0; i < replyCount; i++) {
+                CommentItem reply = comment.previewReplies.get(i);
+                TextView preview = text("", 15, 0xFF9FA3AC, Typeface.NORMAL);
+                preview.setText(landscapeInlineReplyText(reply));
+                preview.setMaxLines(2);
+                preview.setEllipsize(TextUtils.TruncateAt.END);
+                replies.addView(preview, new LinearLayout.LayoutParams(-1, -2));
+            }
+            if (comment.replyCount > 0) {
+                TextView more = text("\u5171" + comment.replyCount + "\u6761\u56DE\u590D  \u203A", 16, 0xFF75B6D6, Typeface.NORMAL);
+                more.setPadding(0, dp(7), 0, 0);
+                replies.addView(more, new LinearLayout.LayoutParams(-1, -2));
+            }
+            LinearLayout.LayoutParams repliesParams = new LinearLayout.LayoutParams(-1, -2);
+            repliesParams.topMargin = dp(14);
+            body.addView(replies, repliesParams);
+        }
+
+        row.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout wrapper = new LinearLayout(this);
+        wrapper.setOrientation(LinearLayout.VERTICAL);
+        wrapper.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        View divider = new View(this);
+        divider.setBackgroundColor(0xFF2A2B30);
+        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, 1);
+        dividerParams.leftMargin = dp(112);
+        wrapper.addView(divider, dividerParams);
+        return wrapper;
+    }
+
+    private CharSequence landscapeInlineReplyText(CommentItem reply) {
+        SpannableStringBuilder builder = new SpannableStringBuilder(
+                fallback(reply.user, "\u533F\u540D") + ": " + displayCommentMessage(reply.message) + "  |  ");
+        int iconStart = builder.length();
+        builder.append("\uFFFC");
+        int iconEnd = builder.length();
+        builder.append(" ").append(formatCount(reply.like));
+        Drawable drawable = getResources().getDrawable(reply.liked
+                ? R.drawable.ic_bili_comment_like_active
+                : R.drawable.ic_bili_comment_like);
+        int iconSize = dp(17);
+        drawable.setBounds(0, 0, iconSize, iconSize);
+        drawable.setAlpha(reply.liked ? 255 : 150);
+        builder.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM),
+                iconStart, iconEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return builder;
+    }
+
     private void applyLandscapeControlsLayout(FrameLayout panel) {
         if (panel == null || panel.getWidth() <= 0 || panel.getHeight() <= 0) return;
         setPctFrame(panel.getChildAt(0), 5.1f, 6.4f, 4.5f, 9.6f);
-        setPctFrame(landscapeTitleView, 10.9f, 7.0f, 50.8f, 7.8f);
+        setPctFrame(landscapeTitleView, 10.9f, 7.0f, 16.2f, 7.8f);
         setPctFrame(panel.getChildAt(2), 52.6f, 7.2f, 1.2f, 7.0f);
         setPctFrame(landscapeOwnerNameView, 54.3f, 7.0f, 8.0f, 7.8f);
-        setPctFrame(landscapeAudienceIconView, 62.6f, 9.5f, 1.5f, 3.0f);
-        setPctFrame(landscapeWatchingTextView, 64.0f, 8.6f, 8.4f, 4.8f);
+        setPctFrame(landscapeAudienceIconView, 27.7f, 8.2f, 1.6f, 3.6f);
+        setPctFrame(landscapeWatchingTextView, 29.2f, 7.3f, 11.0f, 5.0f);
         setPctFrame(panel.getChildAt(6), 48.6f, 1.1f, 5.4f, 4.7f);
-        setPctFrame(panel.getChildAt(7), 89.5f, 1.2f, 4.8f, 4.2f);
-        setPctFrame(panel.getChildAt(8), 94.5f, 1.1f, 3.8f, 4.2f);
+        setPctFrame(panel.getChildAt(7), 89.1f, 1.1f, 5.1f, 4.7f);
+        setPctFrame(panel.getChildAt(8), 95.1f, 1.5f, 3.0f, 3.7f);
 
         setPctFrame(lightTimeView, 5.6f, 78.7f, 6.0f, 5.5f);
         setPctFrame(landscapeDurationView, 88.3f, 78.7f, 6.5f, 5.5f);
         setPctFrame(lightProgressBar, 12.0f, 79.5f, 74.4f, 4.3f);
-        setPctFrame(lightPlayButton, 5.0f, 88.6f, 5.2f, 8.7f);
-        setPctFrame(lightDanmakuButton, 12.8f, 89.2f, 4.0f, 7.6f);
-        setPctFrame(lightDanmakuInputPill, 18.6f, 89.1f, 47.2f, 7.8f);
-        setPctFrame(landscapeSpeedView, 68.2f, 89.0f, 6.0f, 7.6f);
-        setPctFrame(landscapeClarityView, 75.6f, 89.0f, 5.4f, 7.6f);
-        setPctFrame(landscapeLikeButton, 82.2f, 87.8f, 5.3f, 10.2f);
-        setPctFrame(landscapeCommentButton, 90.0f, 87.8f, 5.3f, 10.2f);
+        setPctFrame(lightPlayButton, 5.0f, 85.8f, 5.2f, 8.7f);
+        setPctFrame(lightDanmakuButton, 12.8f, 86.4f, 4.0f, 7.6f);
+        setPctFrame(lightDanmakuInputPill, 18.6f, 86.3f, 44.1f, 8.4f);
+        setPctFrame(landscapeSpeedView, 65.6f, 86.2f, 5.2f, 7.8f);
+        setPctFrame(landscapeClarityView, 72.0f, 86.2f, 7.8f, 7.8f);
+        setPctFrame(landscapeLikeButton, 82.0f, 85.0f, 5.7f, 10.2f);
+        setPctFrame(landscapeCommentButton, 89.8f, 85.0f, 5.7f, 10.2f);
     }
 
     private void setPctFrame(View child, float leftPct, float topPct, float widthPct, float heightPct) {
@@ -2554,7 +3136,7 @@ public final class MainActivity extends Activity {
             if (action == MotionEvent.ACTION_DOWN) {
                 progressDragging = true;
                 progressLastTouchX = event.getX();
-                updateSeekTvEyes(0f, false);
+                resetSeekTvEyes(false);
                 uiHandler.removeCallbacks(hideLightControlsRunnable);
                 view.animate().scaleY(1.35f).setDuration(80).start();
             }
@@ -2567,7 +3149,7 @@ public final class MainActivity extends Activity {
                 commitProgressAt(event.getX(), view.getWidth());
                 progressDragging = false;
                 progressLastTouchX = Float.NaN;
-                updateSeekTvEyes(0f, true);
+                resetSeekTvEyes(true);
                 view.animate().scaleY(1f).setDuration(120).start();
                 hideProgressBubbleLater(1500);
                 if (landscapeMode) scheduleLightControlsHide(1100);
@@ -2578,7 +3160,7 @@ public final class MainActivity extends Activity {
             progressDragging = false;
             progressLastTouchX = Float.NaN;
             progressDragPositionMs = -1L;
-            updateSeekTvEyes(0f, true);
+            resetSeekTvEyes(true);
             view.animate().scaleY(1f).setDuration(120).start();
             progressBubbleCard.setVisibility(View.GONE);
         }
@@ -2627,7 +3209,6 @@ public final class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(12), 0, 0, 0);
         header.setOnTouchListener((view, event) -> handleCommentsDrag(event));
         TextView intro = text("简介", 17, 0xFF9A9EA6, Typeface.BOLD);
         intro.setGravity(Gravity.CENTER_VERTICAL);
@@ -2663,14 +3244,15 @@ public final class MainActivity extends Activity {
         commentSubHeader.addView(commentSectionTitleView, new LinearLayout.LayoutParams(0, dp(30), 1));
         commentSortView = text("☰ 按热度", 14, 0xFF8E9299, Typeface.NORMAL);
         commentSortView.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        commentSortView.setIncludeFontPadding(false);
         commentSortView.setOnClickListener(v -> {
             if (commentDetailOpen) return;
             commentsByTime = !commentsByTime;
             updateCommentSortLabel();
             loadComments(true);
         });
-        commentSubHeader.addView(commentSortView, new LinearLayout.LayoutParams(dp(120), dp(30)));
-        panel.addView(commentSubHeader, new LinearLayout.LayoutParams(-1, -2));
+        commentSubHeader.addView(commentSortView, new LinearLayout.LayoutParams(commentWidth(28.0f), -1));
+        panel.addView(commentSubHeader, new LinearLayout.LayoutParams(-1, commentHeight(4.65f)));
 
         commentsContentFrame = new FrameLayout(this);
         commentsScrollView = new ScrollView(this);
@@ -2694,18 +3276,18 @@ public final class MainActivity extends Activity {
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(6), 0, dp(2));
+        inputRow.setPadding(commentWidth(3.4f), commentHeight(0.48f), commentWidth(3.2f), commentHeight(0.9f));
         commentInput = new EditText(this);
         commentInput.setSingleLine(false);
         commentInput.setMaxLines(3);
         commentInput.setHint(currentCommentControl.rootHint());
         commentInput.setHintTextColor(0xFF9CA1A8);
         commentInput.setTextColor(0xFF1D1F23);
-        commentInput.setTextSize(15);
-        commentInput.setPadding(dp(14), 0, dp(14), 0);
+        commentInput.setTextSize(commentSp(3.45f, 13, 16));
+        commentInput.setPadding(commentWidth(3.5f), 0, commentWidth(3.0f), 0);
         commentInput.setMinHeight(0);
         commentInput.setIncludeFontPadding(false);
-        commentInput.setBackground(rounded(0xFFF0F1F4, dp(16)));
+        commentInput.setBackground(rounded(0xFFF1F2F5, commentHeight(2.12f)));
         commentInput.setOnFocusChangeListener((view, hasFocus) -> {
             if (hasFocus) {
                 commentInputEverFocused = true;
@@ -2727,15 +3309,15 @@ public final class MainActivity extends Activity {
             public void afterTextChanged(Editable s) {
             }
         });
-        inputRow.addView(commentInput, new LinearLayout.LayoutParams(0, dp(32), 1));
+        inputRow.addView(commentInput, new LinearLayout.LayoutParams(0, commentHeight(4.35f), 1));
 
-        sendCommentButton = pillText("☻", 18, 0xFF8F949C, 0xFFF0F1F4);
+        sendCommentButton = pillText("☻", commentSp(4.0f, 16, 20), 0xFF8F949C, 0xFFF1F2F5);
         sendCommentButton.setGravity(Gravity.CENTER);
         sendCommentButton.setOnClickListener(v -> sendComment());
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(32), dp(32));
-        sendParams.leftMargin = dp(8);
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(commentWidth(7.05f), commentWidth(7.05f));
+        sendParams.leftMargin = commentWidth(2.55f);
         inputRow.addView(sendCommentButton, sendParams);
-        panel.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
+        panel.addView(inputRow, new LinearLayout.LayoutParams(-1, commentHeight(6.95f)));
         updateCommentSendButton();
         return panel;
     }
@@ -3125,7 +3707,7 @@ public final class MainActivity extends Activity {
         }
         shareButton.setCount(formatCount(item.shareCount));
         if (landscapeShareButton != null) landscapeShareButton.setCount("");
-        if (landscapeClarityView != null) landscapeClarityView.setText(currentClarity);
+        if (landscapeClarityView != null) landscapeClarityView.setText(landscapeClarityButtonLabel());
         if (landscapeSpeedView != null) landscapeSpeedView.setText("倍速");
         updateFullscreenButtonIcon();
         applyVideoResizeMode();
@@ -3633,9 +4215,10 @@ public final class MainActivity extends Activity {
         if (player == null) return;
         if (player.isPlaying()) {
             player.pause();
-            showCenter("暂停\n" + currentPlaybackTimeText());
+            updatePausedOverlay();
         } else {
             player.play();
+            updatePausedOverlay();
             showCenter("播放");
         }
         updateKeepScreenOn();
@@ -4065,18 +4648,22 @@ public final class MainActivity extends Activity {
     }
 
     private void enterLandscapeMode() {
+        hideLandscapeSideDrawer(false);
         landscapeMode = true;
         uiHidden = true;
         clearScreenMode = false;
         applySystemBarsForMode();
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         setOverlayVisibility(false);
-        setLightControlsVisible(false);
+        setLightControlsVisible(true);
+        scheduleLightControlsHide(2200);
         updateFullscreenButtonIcon();
         fullscreenButton.setVisibility(View.GONE);
+        updatePausedOverlay();
     }
 
     private void exitLandscapeMode() {
+        hideLandscapeSideDrawer(false);
         landscapeMode = false;
         uiHidden = false;
         clearScreenMode = false;
@@ -4088,6 +4675,7 @@ public final class MainActivity extends Activity {
         applySystemBarsForMode();
         setOverlayVisibility(true);
         updateFullscreenButtonIcon();
+        updatePausedOverlay();
         if (root != null) root.post(this::applyResponsivePortraitLayout);
     }
 
@@ -4149,6 +4737,7 @@ public final class MainActivity extends Activity {
                 lightControls.post(() -> applyLandscapeControlsLayout(lightControls));
             }
         }
+        applyVideoResizeMode();
         if (lightWatchingView != null) {
             lightWatchingView.setVisibility(visible && !landscapeMode ? View.VISIBLE : View.GONE);
             if (visible) lightWatchingView.bringToFront();
@@ -4241,6 +4830,7 @@ public final class MainActivity extends Activity {
         commentsPanel.setTranslationY(startTranslation);
         commentsPanel.setVisibility(View.VISIBLE);
         updateDanmakuChrome();
+        updatePausedOverlay();
         animateCommentsPanelTo(startTranslation, 0f, height, 300, null);
         if (!hasCachedState) loadComments(true);
     }
@@ -4268,6 +4858,7 @@ public final class MainActivity extends Activity {
                         commentsPanel.setVisibility(View.GONE);
                         commentsPanel.setTranslationY(0);
                         updateDanmakuChrome();
+                        updatePausedOverlay();
                         if (restoreChrome) {
                             restoreChromeAfterComments();
                         } else {
@@ -4279,6 +4870,7 @@ public final class MainActivity extends Activity {
             commentsPanel.setVisibility(View.GONE);
             commentsPanel.setTranslationY(0);
             updateDanmakuChrome();
+            updatePausedOverlay();
             if (restoreChrome) {
                 restoreChromeAfterComments();
             } else {
@@ -4618,7 +5210,7 @@ public final class MainActivity extends Activity {
     }
 
     private int commentsRootHeight() {
-        return Math.max(1, rawRootHeight() - contentTop());
+        return Math.max(1, rawRootHeight());
     }
 
     private int commentsPanelTopForHeight(int height) {
@@ -4626,7 +5218,7 @@ public final class MainActivity extends Activity {
     }
 
     private int commentsHalfHeight() {
-        return Math.round(commentsRootHeight() * 0.637f);
+        return Math.round(commentsRootHeight() * (COMMENT_SHEET_HEIGHT_PCT / 100f));
     }
 
     private int commentsFullHeight() {
@@ -4660,7 +5252,7 @@ public final class MainActivity extends Activity {
     private void relayoutCommentsPanelForInsets() {
         if (commentsPanel == null) return;
         int safeBottom = landscapeMode ? 0 : Math.max(0, systemInsetBottom);
-        commentsPanel.setPadding(dp(14), dp(6), dp(14), dp(8) + safeBottom);
+        commentsPanel.setPadding(0, 0, 0, safeBottom);
         int height = commentsPanel.getLayoutParams() == null
                 ? commentsHalfHeight()
                 : commentsPanel.getLayoutParams().height;
@@ -4796,6 +5388,9 @@ public final class MainActivity extends Activity {
             commentsHasMore = false;
         }
         renderComments();
+        if (landscapeSideDrawerMode == LANDSCAPE_DRAWER_COMMENTS) {
+            renderLandscapeCommentDrawer();
+        }
         if (!append && commentsScrollView != null) commentsScrollView.scrollTo(0, 0);
     }
 
@@ -4865,15 +5460,15 @@ public final class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(child ? Math.round(rootWidth() * 0.116f) : 0,
-                child ? Math.round(rootWidth() * 0.014f) : Math.round(rootWidth() * 0.026f),
-                0,
-                child ? Math.round(rootWidth() * 0.018f) : Math.round(rootWidth() * 0.026f));
+        row.setPadding(commentWidth(3.45f),
+                child ? commentHeight(1.18f) : commentHeight(1.72f),
+                commentWidth(3.35f),
+                child ? commentHeight(1.22f) : commentHeight(1.42f));
 
-        int avatarSize = Math.max(1, Math.round(rootWidth() * (child ? 0.058f : 0.083f)));
+        int avatarSize = commentWidth(child ? 7.1f : 8.25f);
         FrameLayout avatarBox = new FrameLayout(this);
         avatarBox.setBackground(rounded(child ? 0xFFB8C0CA : 0xFFFFD166, avatarSize / 2));
-        TextView avatarFallback = text(userInitial(comment.user), child ? 12 : 14, Color.WHITE, Typeface.BOLD);
+        TextView avatarFallback = text(userInitial(comment.user), commentSp(child ? 2.7f : 3.1f, 11, 15), Color.WHITE, Typeface.BOLD);
         avatarFallback.setGravity(Gravity.CENTER);
         avatarBox.addView(avatarFallback, new FrameLayout.LayoutParams(-1, -1));
         ImageView avatarImage = new ImageView(this);
@@ -4891,7 +5486,7 @@ public final class MainActivity extends Activity {
             avatarBox.addView(vipBadge, vipParams);
         }
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(avatarSize, avatarSize);
-        avatarParams.rightMargin = Math.max(1, Math.round(rootWidth() * 0.030f));
+        avatarParams.rightMargin = commentWidth(child ? 3.2f : 3.05f);
         row.addView(avatarBox, avatarParams);
 
         LinearLayout body = new LinearLayout(this);
@@ -4905,7 +5500,7 @@ public final class MainActivity extends Activity {
         nameRow.setOrientation(LinearLayout.HORIZONTAL);
 
         int nameColor = (upComment || comment.vip) ? BILI_PINK : 0xFF8B9098;
-        TextView name = text(fallback(comment.user, "匿名用户"), 14, nameColor, Typeface.NORMAL);
+        TextView name = text(fallback(comment.user, "匿名用户"), commentSp(3.35f, 13, 16), nameColor, Typeface.NORMAL);
         name.setSingleLine(true);
         name.setEllipsize(TextUtils.TruncateAt.END);
         name.setMaxWidth(Math.max(1, Math.round(rootWidth() * (child ? 0.48f : 0.56f))));
@@ -4914,41 +5509,40 @@ public final class MainActivity extends Activity {
         int levelRes = levelIconRes(comment.level);
         if (levelRes != 0) {
             ImageView levelIcon = iconImage(levelRes, comment.level);
-            int levelWidth = Math.max(1, Math.round(rootWidth() * (child ? 0.047f : 0.054f)));
+            int levelWidth = commentWidth(child ? 4.75f : 5.35f);
             int levelHeight = Math.max(1, Math.round(levelWidth * 0.5f));
             LinearLayout.LayoutParams levelParams = new LinearLayout.LayoutParams(levelWidth, levelHeight);
-            levelParams.leftMargin = Math.max(1, Math.round(rootWidth() * 0.014f));
+            levelParams.leftMargin = commentWidth(1.35f);
             nameRow.addView(levelIcon, levelParams);
         }
         if (upComment) {
-            TextView upBadge = text("UP", 9, Color.WHITE, Typeface.BOLD);
+            TextView upBadge = text("UP", commentSp(2.1f, 8, 10), Color.WHITE, Typeface.BOLD);
             upBadge.setGravity(Gravity.CENTER);
             upBadge.setIncludeFontPadding(false);
-            upBadge.setPadding(Math.max(1, Math.round(rootWidth() * 0.010f)), 0,
-                    Math.max(1, Math.round(rootWidth() * 0.010f)), 0);
-            upBadge.setBackground(rounded(BILI_PINK, Math.max(1, Math.round(rootWidth() * 0.004f))));
-            LinearLayout.LayoutParams upParams = new LinearLayout.LayoutParams(-2, Math.max(1, Math.round(rootWidth() * 0.025f)));
-            upParams.leftMargin = Math.max(1, Math.round(rootWidth() * 0.014f));
+            upBadge.setPadding(commentWidth(0.9f), 0, commentWidth(0.9f), 0);
+            upBadge.setBackground(rounded(BILI_PINK, commentWidth(0.4f)));
+            LinearLayout.LayoutParams upParams = new LinearLayout.LayoutParams(-2, commentWidth(2.45f));
+            upParams.leftMargin = commentWidth(1.35f);
             nameRow.addView(upBadge, upParams);
         }
         body.addView(nameRow, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView message = text("", child ? 14 : 16, 0xFF24262B, Typeface.NORMAL);
+        TextView message = text("", child ? commentSp(3.45f, 13, 16) : commentSp(4.05f, 15, 18), 0xFF24262B, Typeface.NORMAL);
         renderCommentText(message, comment);
-        message.setLineSpacing(dp(1), 1.04f);
-        message.setPadding(0, dp(5), 0, 0);
+        message.setLineSpacing(commentHeight(0.08f), 1.04f);
+        message.setPadding(0, commentHeight(0.56f), 0, 0);
         body.addView(message, new LinearLayout.LayoutParams(-1, -2));
 
         if (!comment.pictureUrls.isEmpty()) {
             LinearLayout.LayoutParams pictureParams = new LinearLayout.LayoutParams(-1, -2);
-            pictureParams.topMargin = Math.max(1, Math.round(rootWidth() * 0.018f));
+            pictureParams.topMargin = commentHeight(0.86f);
             body.addView(buildCommentPictures(comment), pictureParams);
         }
 
         LinearLayout meta = new LinearLayout(this);
         meta.setGravity(Gravity.CENTER_VERTICAL);
-        meta.setPadding(0, dp(6), 0, 0);
-        TextView left = text(comment.ctimeText + locationText(comment.location) + "  回复", 12, 0xFFA7ABB2, Typeface.NORMAL);
+        meta.setPadding(0, commentHeight(0.64f), 0, 0);
+        TextView left = text(comment.ctimeText + locationText(comment.location) + "  回复", commentSp(3.0f, 11, 14), 0xFFA7ABB2, Typeface.NORMAL);
         meta.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
         meta.addView(buildCommentActionStrip(comment), new LinearLayout.LayoutParams(commentActionStripWidth(), commentActionStripHeight()));
         body.addView(meta, new LinearLayout.LayoutParams(-1, -2));
@@ -4956,20 +5550,20 @@ public final class MainActivity extends Activity {
         LinearLayout repliesBox = new LinearLayout(this);
         repliesBox.setOrientation(LinearLayout.VERTICAL);
         if (allowReplies && !child && (!comment.previewReplies.isEmpty() || comment.replyCount > 0)) {
-            repliesBox.setPadding(dp(12), dp(9), dp(12), dp(9));
-            repliesBox.setBackground(rounded(0xFFF3F4F6, dp(9)));
+            repliesBox.setPadding(commentWidth(2.9f), commentHeight(0.95f), commentWidth(2.9f), commentHeight(0.9f));
+            repliesBox.setBackground(rounded(0xFFF5F5F7, commentWidth(1.85f)));
             repliesBox.setClickable(true);
             repliesBox.setOnClickListener(v -> showCommentDetail(comment));
             for (CommentItem reply : comment.previewReplies) {
                 View preview = buildPreviewReplyRow(comment, reply);
                 repliesBox.addView(preview, new LinearLayout.LayoutParams(-1, -2));
             }
-            TextView expand = text("共" + comment.replyCount + "条回复  ›", 14, 0xFF3B83A6, Typeface.BOLD);
-            expand.setPadding(0, dp(6), 0, 0);
+            TextView expand = text("共" + comment.replyCount + "条回复  ›", commentSp(3.35f, 13, 16), 0xFF1E86A6, Typeface.BOLD);
+            expand.setPadding(0, commentHeight(0.62f), 0, 0);
             expand.setOnClickListener(v -> showCommentDetail(comment));
             repliesBox.addView(expand, new LinearLayout.LayoutParams(-1, -2));
             LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, -2);
-            boxParams.topMargin = dp(8);
+            boxParams.topMargin = commentHeight(0.82f);
             body.addView(repliesBox, boxParams);
         }
 
@@ -4979,7 +5573,7 @@ public final class MainActivity extends Activity {
             View divider = new View(this);
             divider.setBackgroundColor(0xFFEDEEF1);
             LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1)));
-            dividerParams.leftMargin = dp(50);
+            dividerParams.leftMargin = commentWidth(15.55f);
             wrapper.addView(divider, dividerParams);
         }
         return wrapper;
@@ -4987,7 +5581,7 @@ public final class MainActivity extends Activity {
 
     private View buildPreviewReplyRow(CommentItem parent, CommentItem reply) {
         TextView preview = text(fallback(reply.user, "匿名用户") + "：" + displayCommentMessage(reply.message),
-                14, 0xFF666D76, Typeface.NORMAL);
+                commentSp(3.45f, 13, 16), 0xFF666D76, Typeface.NORMAL);
         preview.setMaxLines(2);
         preview.setEllipsize(TextUtils.TruncateAt.END);
         preview.setText(buildInlinePreviewReplyText(reply));
@@ -5012,7 +5606,7 @@ public final class MainActivity extends Activity {
         Drawable drawable = getResources().getDrawable(reply.liked
                 ? R.drawable.ic_bili_comment_like_active
                 : R.drawable.ic_bili_comment_like);
-        int iconSize = Math.max(1, Math.round(rootWidth() * 0.034f));
+        int iconSize = commentWidth(3.35f);
         drawable.setBounds(0, 0, iconSize, iconSize);
         drawable.setAlpha(reply.liked ? 255 : 150);
         builder.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), iconStart, iconEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -5150,7 +5744,7 @@ public final class MainActivity extends Activity {
         strip.setOrientation(LinearLayout.HORIZONTAL);
 
         ImageView likeIcon = iconImage(R.drawable.ic_bili_comment_like, "like");
-        TextView likeCount = text(formatCount(comment.like), 12, 0xFF7E838B, Typeface.NORMAL);
+        TextView likeCount = text(formatCount(comment.like), commentSp(2.9f, 11, 14), 0xFF7E838B, Typeface.NORMAL);
         likeCount.setGravity(Gravity.CENTER_VERTICAL);
         ImageView dislikeIcon = iconImage(R.drawable.ic_bili_comment_dislike, "dislike");
         View.OnClickListener likeListener = v -> {
@@ -5171,8 +5765,8 @@ public final class MainActivity extends Activity {
         int iconSize = commentActionIconSize();
         strip.addView(likeIcon, new LinearLayout.LayoutParams(iconSize, iconSize));
         LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-2, commentActionStripHeight());
-        countParams.leftMargin = Math.max(1, Math.round(rootWidth() * 0.008f));
-        countParams.rightMargin = Math.max(1, Math.round(rootWidth() * 0.031f));
+        countParams.leftMargin = commentWidth(0.8f);
+        countParams.rightMargin = commentWidth(3.05f);
         strip.addView(likeCount, countParams);
 
         View.OnClickListener dislikeListener = v -> {
@@ -5190,7 +5784,7 @@ public final class MainActivity extends Activity {
         };
         dislikeIcon.setOnClickListener(dislikeListener);
         LinearLayout.LayoutParams dislikeParams = new LinearLayout.LayoutParams(iconSize, iconSize);
-        dislikeParams.rightMargin = Math.max(1, Math.round(rootWidth() * 0.036f));
+        dislikeParams.rightMargin = commentWidth(3.6f);
         strip.addView(dislikeIcon, dislikeParams);
 
         ImageView moreIcon = iconImage(R.drawable.ic_bili_more, "more");
@@ -5217,15 +5811,15 @@ public final class MainActivity extends Activity {
     }
 
     private int commentActionStripWidth() {
-        return Math.max(1, Math.round(rootWidth() * 0.286f));
+        return commentWidth(29.2f);
     }
 
     private int commentActionStripHeight() {
-        return Math.max(1, Math.round(rootWidth() * 0.046f));
+        return commentWidth(4.7f);
     }
 
     private int commentActionIconSize() {
-        return Math.max(1, Math.round(rootWidth() * 0.036f));
+        return commentWidth(3.75f);
     }
 
     private int commentPictureWidth(CommentItem comment, int index) {
@@ -5651,20 +6245,44 @@ public final class MainActivity extends Activity {
         updateCommentChromeForDetailState();
 
         commentDetailList.removeAllViews();
-        TextView back = text("‹ 返回评论列表", 15, 0xFF3B83A6, Typeface.BOLD);
-        back.setGravity(Gravity.CENTER_VERTICAL);
-        back.setPadding(0, dp(8), 0, dp(10));
-        back.setOnClickListener(v -> hideCommentDetailDrawer(true));
-        commentDetailList.addView(back, new LinearLayout.LayoutParams(-1, dp(48)));
+        FrameLayout detailHeader = new FrameLayout(this);
+        TextView detailTitle = text("评论详情", commentSp(3.65f, 14, 18), 0xFF1F2228, Typeface.NORMAL);
+        detailTitle.setGravity(Gravity.CENTER_VERTICAL);
+        detailTitle.setIncludeFontPadding(false);
+        FrameLayout.LayoutParams detailTitleParams = new FrameLayout.LayoutParams(-2, -1, Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        detailTitleParams.leftMargin = commentWidth(3.45f);
+        detailHeader.addView(detailTitle, detailTitleParams);
+        TextView close = text("×", commentSp(6.1f, 25, 34), 0xFF9CA0A8, Typeface.NORMAL);
+        close.setGravity(Gravity.CENTER);
+        close.setIncludeFontPadding(false);
+        close.setOnClickListener(v -> hideCommentDetailDrawer(true));
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(commentWidth(8.0f), commentWidth(8.0f), Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        closeParams.rightMargin = commentWidth(1.45f);
+        detailHeader.addView(close, closeParams);
+        commentDetailList.addView(detailHeader, new LinearLayout.LayoutParams(-1, commentHeight(6.15f)));
+
+        View detailDivider = new View(this);
+        detailDivider.setBackgroundColor(0xFFE8E9EC);
+        commentDetailList.addView(detailDivider, new LinearLayout.LayoutParams(-1, Math.max(1, commentHeight(0.06f))));
 
         commentDetailList.addView(buildCommentRow(comment, false, false));
 
+        View replySectionBand = new View(this);
+        replySectionBand.setBackgroundColor(0xFFF2F3F6);
+        commentDetailList.addView(replySectionBand, new LinearLayout.LayoutParams(-1, commentHeight(1.05f)));
+
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, dp(12), 0, dp(8));
-        TextView title = text("相关回复共" + formatCount(comment.replyCount) + "条", 15, 0xFF252A31, Typeface.BOLD);
-        header.addView(title, new LinearLayout.LayoutParams(0, dp(34), 1));
-        commentDetailList.addView(header, new LinearLayout.LayoutParams(-1, -2));
+        header.setPadding(commentWidth(3.45f), 0, commentWidth(3.35f), 0);
+        TextView title = text("相关回复共" + formatCount(comment.replyCount) + "条", commentSp(3.25f, 13, 16), 0xFF8E9299, Typeface.NORMAL);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setIncludeFontPadding(false);
+        header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
+        TextView sort = text("☰ 按时间", commentSp(3.25f, 13, 16), 0xFF8E9299, Typeface.NORMAL);
+        sort.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        sort.setIncludeFontPadding(false);
+        header.addView(sort, new LinearLayout.LayoutParams(commentWidth(28.0f), -1));
+        commentDetailList.addView(header, new LinearLayout.LayoutParams(-1, commentHeight(6.2f)));
 
         LinearLayout replies = new LinearLayout(this);
         replies.setOrientation(LinearLayout.VERTICAL);
@@ -5773,18 +6391,19 @@ public final class MainActivity extends Activity {
         ViewGroup.LayoutParams rawParams = sendCommentButton.getLayoutParams();
         if (rawParams instanceof LinearLayout.LayoutParams) {
             LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) rawParams;
-            int targetWidth = hasText ? dp(60) : dp(32);
-            if (params.width != targetWidth || params.height != dp(32)) {
+            int targetWidth = hasText ? commentWidth(15.0f) : commentWidth(7.05f);
+            int targetHeight = commentWidth(7.05f);
+            if (params.width != targetWidth || params.height != targetHeight) {
                 params.width = targetWidth;
-                params.height = dp(32);
+                params.height = targetHeight;
                 sendCommentButton.setLayoutParams(params);
             }
         }
         sendCommentButton.setEnabled(enabled);
         sendCommentButton.setText(hasText ? "发送" : "☻");
-        sendCommentButton.setTextSize(hasText ? 13 : 18);
+        sendCommentButton.setTextSize(hasText ? commentSp(3.0f, 12, 14) : commentSp(4.0f, 16, 20));
         sendCommentButton.setTextColor(hasText ? (enabled ? Color.WHITE : 0xFF9CA1A8) : 0xFF8F949C);
-        sendCommentButton.setBackground(rounded(hasText ? (enabled ? BILI_PINK : 0xFFE8EAF0) : 0xFFF0F1F4, dp(16)));
+        sendCommentButton.setBackground(rounded(hasText ? (enabled ? BILI_PINK : 0xFFE8EAF0) : 0xFFF1F2F5, commentWidth(3.52f)));
     }
 
     private void sendComment() {
@@ -6688,6 +7307,538 @@ public final class MainActivity extends Activity {
         Toast.makeText(this, "关注成功", Toast.LENGTH_SHORT).show();
     }
 
+    private void showBiliCoinSheet() {
+        if (currentItem == null || root == null) return;
+        Dialog dialog = new Dialog(this);
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(0xB8000000);
+        overlay.setOnClickListener(v -> dialog.dismiss());
+
+        FrameLayout panel = new FrameLayout(this);
+        panel.setClickable(true);
+        panel.setOnClickListener(v -> {
+        });
+        overlay.addView(panel, new FrameLayout.LayoutParams(-1, -1));
+
+        boolean reprint = currentItem.copyright == 2;
+        final int[] selected = new int[]{1};
+        final boolean[] alsoLike = new boolean[]{true};
+        final boolean[] submitting = new boolean[]{false};
+
+        FrameLayout one = biliCoinCard(1, true);
+        FrameLayout two = biliCoinCard(2, false);
+        panel.addView(one, biliCoinCardParams(0.497f, 0.385f, true));
+        if (!reprint) {
+            panel.addView(two, biliCoinCardParams(0.729f, 0.405f, false));
+        }
+
+        ImageView mascot = new ImageView(this);
+        mascot.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        mascot.setAdjustViewBounds(true);
+        mascot.setImageResource(R.drawable.ic_bili_coin_mascot_1);
+        mascot.setOnClickListener(v -> {
+        });
+        int mascotWidth = Math.max(1, Math.round(biliCoinSheetWidth() * 0.278f));
+        int mascotHeight = Math.max(1, Math.round(mascotWidth * 447f / 321f));
+        FrameLayout.LayoutParams mascotParams = new FrameLayout.LayoutParams(mascotWidth, mascotHeight, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        mascotParams.topMargin = Math.round(biliCoinSheetHeight() * (reprint ? 0.575f : 0.575f));
+        panel.addView(mascot, mascotParams);
+
+        TextView hint = text("上划或点击22娘投硬币", 16, 0xFFE5E5E5, Typeface.NORMAL);
+        hint.setGravity(Gravity.CENTER);
+        hint.setShadowLayer(5, 0, 1, 0xAA000000);
+        FrameLayout.LayoutParams hintParams = new FrameLayout.LayoutParams(-1, Math.max(1, Math.round(biliCoinSheetHeight() * 0.025f)), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        hintParams.topMargin = Math.round(biliCoinSheetHeight() * 0.770f);
+        panel.addView(hint, hintParams);
+
+        TextView balance = text("硬币余额：" + coinBalanceText(), 16, 0xFFE5E5E5, Typeface.NORMAL);
+        balance.setGravity(Gravity.CENTER);
+        balance.setShadowLayer(5, 0, 1, 0xAA000000);
+        FrameLayout.LayoutParams balanceParams = new FrameLayout.LayoutParams(-1, Math.max(1, Math.round(biliCoinSheetHeight() * 0.025f)), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        balanceParams.topMargin = Math.round(biliCoinSheetHeight() * 0.802f);
+        panel.addView(balance, balanceParams);
+        updateCoinBalanceAsync(balance);
+
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        TextView alsoLikeView = text("☑ 同时点赞内容", 18, Color.WHITE, Typeface.BOLD);
+        alsoLikeView.setGravity(Gravity.CENTER_VERTICAL);
+        alsoLikeView.setShadowLayer(5, 0, 1, 0xAA000000);
+        alsoLikeView.setOnClickListener(v -> {
+            alsoLike[0] = !alsoLike[0];
+            alsoLikeView.setText((alsoLike[0] ? "☑ " : "☐ ") + "同时点赞内容");
+            alsoLikeView.setAlpha(alsoLike[0] ? 1f : 0.72f);
+        });
+        int bottomItemHeight = Math.max(1, Math.round(biliCoinSheetHeight() * 0.036f));
+        bottom.addView(alsoLikeView, new LinearLayout.LayoutParams(0, bottomItemHeight, 1));
+        TextView help = text("如何获取硬币？", 18, Color.WHITE, Typeface.BOLD);
+        help.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        help.setShadowLayer(5, 0, 1, 0xAA000000);
+        help.setOnClickListener(v -> Toast.makeText(this, "硬币余额来自账号接口", Toast.LENGTH_SHORT).show());
+        bottom.addView(help, new LinearLayout.LayoutParams(0, bottomItemHeight, 1));
+        FrameLayout.LayoutParams bottomParams = new FrameLayout.LayoutParams(-1, Math.max(1, Math.round(biliCoinSheetHeight() * 0.040f)), Gravity.TOP);
+        bottomParams.leftMargin = Math.round(biliCoinSheetWidth() * 0.034f);
+        bottomParams.rightMargin = Math.round(biliCoinSheetWidth() * 0.034f);
+        bottomParams.topMargin = Math.round(biliCoinSheetHeight() * 0.872f);
+        panel.addView(bottom, bottomParams);
+
+        TextView close = text("×", 28, Color.WHITE, Typeface.BOLD);
+        close.setGravity(Gravity.CENTER);
+        close.setIncludeFontPadding(false);
+        int closeSize = Math.max(1, Math.round(biliCoinSheetWidth() * 0.072f));
+        close.setBackground(rounded(0x66383B42, closeSize / 2));
+        close.setOnClickListener(v -> dialog.dismiss());
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(closeSize, closeSize, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        closeParams.topMargin = Math.round(biliCoinSheetHeight() * 0.875f);
+        panel.addView(close, closeParams);
+
+        mascot.setOnClickListener(v -> {
+        });
+        final float[] mascotDownY = new float[]{0f};
+        final boolean[] mascotSwipeTriggered = new boolean[]{false};
+        mascot.setOnTouchListener((v, event) -> {
+            if (submitting[0]) return true;
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                mascotDownY[0] = event.getY();
+                mascotSwipeTriggered[0] = false;
+                v.setPressed(true);
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                if (!mascotSwipeTriggered[0] && isBiliCoinMascotSwipeCommit(v, mascotDownY[0], event)) {
+                    mascotSwipeTriggered[0] = true;
+                    v.setPressed(false);
+                    performBiliCoin(dialog, panel, one, two, mascot, hint, balance,
+                            bottom, close, selected[0], reprint, alsoLike[0], submitting);
+                }
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                v.setPressed(false);
+                if (!mascotSwipeTriggered[0] && isBiliCoinMascotSwipeCommit(v, mascotDownY[0], event)) {
+                    mascotSwipeTriggered[0] = true;
+                    performBiliCoin(dialog, panel, one, two, mascot, hint, balance,
+                            bottom, close, selected[0], reprint, alsoLike[0], submitting);
+                }
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                return true;
+            }
+            return true;
+        });
+
+        one.setOnClickListener(v -> {
+            if (submitting[0]) return;
+            if (selected[0] == 1) return;
+            selected[0] = 1;
+            switchBiliCoinMascot(mascot, 1);
+            updateBiliCoinCards(one, two, 1, reprint);
+        });
+        if (!reprint) {
+            two.setOnClickListener(v -> {
+                if (submitting[0]) return;
+                if (selected[0] == 2) return;
+                selected[0] = 2;
+                switchBiliCoinMascot(mascot, 2);
+                updateBiliCoinCards(one, two, 2, false);
+            });
+        }
+
+        dialog.setContentView(overlay);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+    }
+
+    private boolean isBiliCoinMascotSwipeCommit(View mascot, float downY, MotionEvent event) {
+        if (mascot == null || event == null) return false;
+        float upDistance = downY - event.getY();
+        return upDistance >= Math.max(1f, mascot.getHeight()) * 0.07f;
+    }
+
+    private FrameLayout biliCoinCard(int count, boolean selected) {
+        FrameLayout card = new FrameLayout(this);
+        card.setClickable(true);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
+        ImageView board = new ImageView(this);
+        board.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        board.setImageResource(R.drawable.ic_bili_coin_board);
+        card.addView(board, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+
+        ImageView coin = new ImageView(this);
+        coin.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        coin.setImageResource(count == 1 ? R.drawable.ic_bili_coin_1_text : R.drawable.ic_bili_coin_2_text);
+        int cardSize = biliCoinCardSize(selected);
+        int coinWidth = Math.max(1, Math.round(cardSize * (count == 1 ? 0.52f : 0.62f)));
+        int coinHeight = Math.max(1, Math.round(cardSize * 0.68f));
+        card.addView(coin, new FrameLayout.LayoutParams(coinWidth, coinHeight, Gravity.CENTER));
+        styleBiliCoinCard(card, selected, count == 1);
+        return card;
+    }
+
+    private FrameLayout.LayoutParams biliCoinCardParams(float centerXPct, float topPct, boolean selected) {
+        int size = biliCoinCardSize(selected);
+        int screenWidth = Math.max(1, biliCoinSheetWidth());
+        int screenHeight = Math.max(1, biliCoinSheetHeight());
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(size, size, Gravity.TOP | Gravity.LEFT);
+        params.leftMargin = Math.round(screenWidth * centerXPct - size / 2f);
+        params.topMargin = Math.round(screenHeight * topPct);
+        return params;
+    }
+
+    private int biliCoinCardSize(boolean selected) {
+        int screenWidth = Math.max(1, biliCoinSheetWidth());
+        return Math.max(1, Math.round(screenWidth * (selected ? 0.282f : 0.196f)));
+    }
+
+    private void updateBiliCoinCards(FrameLayout one, FrameLayout two, int selected, boolean reprint) {
+        boolean oneSelected = selected == 1 || reprint;
+        animateBiliCoinCardTo(one, 1, oneSelected, biliCoinCardParams(oneSelected ? 0.497f : 0.268f,
+                oneSelected ? 0.385f : 0.405f,
+                oneSelected));
+        styleBiliCoinCard(one, selected == 1, true);
+        if (!reprint && two != null) {
+            boolean twoSelected = selected == 2;
+            animateBiliCoinCardTo(two, 2, twoSelected, biliCoinCardParams(twoSelected ? 0.497f : 0.729f,
+                    twoSelected ? 0.385f : 0.405f,
+                    twoSelected));
+            styleBiliCoinCard(two, selected == 2, false);
+        }
+    }
+
+    private void resizeBiliCoinCard(FrameLayout card, int count, boolean selected) {
+        resizeBiliCoinCardBySize(card, count, biliCoinCardSize(selected));
+    }
+
+    private void resizeBiliCoinCardBySize(FrameLayout card, int count, int cardSize) {
+        if (card == null || card.getChildCount() < 2) return;
+        View coin = card.getChildAt(1);
+        FrameLayout.LayoutParams coinParams = new FrameLayout.LayoutParams(
+                Math.max(1, Math.round(cardSize * (count == 1 ? 0.52f : 0.62f))),
+                Math.max(1, Math.round(cardSize * 0.68f)),
+                Gravity.CENTER);
+        coin.setLayoutParams(coinParams);
+    }
+
+    private void animateBiliCoinCardTo(FrameLayout card, int count, boolean selected, FrameLayout.LayoutParams target) {
+        if (card == null) return;
+        Object oldAnimation = card.getTag();
+        if (oldAnimation instanceof ValueAnimator) {
+            ((ValueAnimator) oldAnimation).cancel();
+        }
+        ViewGroup.LayoutParams currentGeneric = card.getLayoutParams();
+        if (!(currentGeneric instanceof FrameLayout.LayoutParams)) {
+            card.setLayoutParams(target);
+            resizeBiliCoinCard(card, count, selected);
+            return;
+        }
+        FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) currentGeneric;
+        int startWidth = card.getWidth() > 0 ? card.getWidth() : Math.max(1, start.width);
+        int startHeight = card.getHeight() > 0 ? card.getHeight() : Math.max(1, start.height);
+        int startLeft = start.leftMargin;
+        int startTop = start.topMargin;
+        int endWidth = Math.max(1, target.width);
+        int endHeight = Math.max(1, target.height);
+        int endLeft = target.leftMargin;
+        int endTop = target.topMargin;
+
+        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        card.setTag(animator);
+        animator.setDuration(220L);
+        animator.setInterpolator(new DecelerateInterpolator(1.7f));
+        animator.addUpdateListener(animation -> {
+            float t = (float) animation.getAnimatedValue();
+            FrameLayout.LayoutParams next = new FrameLayout.LayoutParams(
+                    Math.max(1, Math.round(startWidth + (endWidth - startWidth) * t)),
+                    Math.max(1, Math.round(startHeight + (endHeight - startHeight) * t)),
+                    Gravity.TOP | Gravity.LEFT);
+            next.leftMargin = Math.round(startLeft + (endLeft - startLeft) * t);
+            next.topMargin = Math.round(startTop + (endTop - startTop) * t);
+            card.setLayoutParams(next);
+            resizeBiliCoinCardBySize(card, count, next.width);
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (card.getTag() == animation) card.setTag(null);
+            }
+
+            @Override
+            public void onAnimationCancel(Animator animation) {
+                if (card.getTag() == animation) card.setTag(null);
+            }
+        });
+        animator.start();
+    }
+
+    private int biliCoinSheetWidth() {
+        return Math.max(1, rawRootWidth());
+    }
+
+    private int biliCoinSheetHeight() {
+        return Math.max(1, rawRootHeight());
+    }
+
+    private void styleBiliCoinCard(FrameLayout card, boolean selected, boolean oneCoin) {
+        if (card == null) return;
+        card.animate().cancel();
+        card.animate().alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(120)
+                .start();
+    }
+
+    private void switchBiliCoinMascot(ImageView mascot, int count) {
+        if (mascot == null) return;
+        mascot.animate().cancel();
+        mascot.setTranslationX(0f);
+        mascot.setTranslationY(0f);
+        mascot.animate()
+                .scaleX(1.075f)
+                .scaleY(0.925f)
+                .setDuration(85L)
+                .setInterpolator(new DecelerateInterpolator(1.25f))
+                .withEndAction(() -> {
+                    mascot.setImageResource(count == 1 ? R.drawable.ic_bili_coin_mascot_1 : R.drawable.ic_bili_coin_mascot_2);
+                    mascot.animate()
+                            .scaleX(0.965f)
+                            .scaleY(1.045f)
+                            .setDuration(90L)
+                            .setInterpolator(new DecelerateInterpolator(1.1f))
+                            .withEndAction(() -> mascot.animate()
+                                    .scaleX(1f)
+                                    .scaleY(1f)
+                                    .setDuration(95L)
+                                    .setInterpolator(new DecelerateInterpolator(1.45f))
+                                    .start())
+                            .start();
+                })
+                .start();
+    }
+
+    private void pulseBiliCoinMascotForSubmit(ImageView mascot, int count) {
+        if (mascot == null) return;
+        mascot.animate().cancel();
+        mascot.setTranslationX(0f);
+        mascot.setTranslationY(0f);
+        mascot.animate()
+                .translationY(-biliCoinSheetHeight() * 0.026f)
+                .scaleX(1.020f)
+                .scaleY(0.982f)
+                .setDuration(75L)
+                .setInterpolator(new DecelerateInterpolator(1.25f))
+                .withEndAction(() -> mascot.animate()
+                        .translationY(-biliCoinSheetHeight() * 0.006f)
+                        .scaleX(0.992f)
+                        .scaleY(1.008f)
+                        .setDuration(95L)
+                        .setInterpolator(new DecelerateInterpolator(1.1f))
+                        .withEndAction(() -> mascot.animate()
+                                .translationY(0f)
+                                .scaleX(1f)
+                                .scaleY(1f)
+                                .setDuration(105L)
+                                .setInterpolator(new DecelerateInterpolator(1.45f))
+                                .start())
+                        .start())
+                .start();
+    }
+
+    private void pulseBiliCoinCardForSubmit(FrameLayout card, int count) {
+        if (card == null) return;
+        card.animate().cancel();
+        card.setTranslationX(0f);
+        card.setTranslationY(0f);
+        float peakY = biliCoinSheetHeight() * (count == 1 ? 0.010f : -0.013f);
+        card.animate()
+                .translationY(peakY)
+                .setDuration(85L)
+                .setInterpolator(new DecelerateInterpolator(1.15f))
+                .withEndAction(() -> card.animate()
+                        .translationY(0f)
+                        .setDuration(175L)
+                        .setInterpolator(new DecelerateInterpolator(1.45f))
+                        .start())
+                .start();
+    }
+
+    private void performBiliCoin(Dialog dialog, FrameLayout panel, FrameLayout one, FrameLayout two,
+                                 ImageView mascot, View hint, View balance, View bottom, View close,
+                                 int count, boolean reprint, boolean alsoLike, boolean[] submitting) {
+        if (submitting != null && submitting[0]) return;
+        if (submitting != null) submitting[0] = true;
+        if (alsoLike && currentItem != null && !currentItem.liked) {
+            likeCurrentFromGesture(false);
+        }
+
+        FrameLayout selectedCard = count == 2 && two != null ? two : one;
+        FrameLayout idleCard = selectedCard == one ? two : one;
+        if (idleCard != null && !reprint) {
+            idleCard.setClickable(false);
+            idleCard.animate().cancel();
+            idleCard.animate()
+                    .alpha(0f)
+                    .scaleX(0.90f)
+                    .scaleY(0.90f)
+                    .setDuration(80L)
+                    .start();
+        }
+        if (selectedCard != null) selectedCard.setClickable(false);
+        if (mascot != null) mascot.setClickable(false);
+        if (close != null) close.setClickable(false);
+        pulseBiliCoinMascotForSubmit(mascot, count);
+        pulseBiliCoinCardForSubmit(selectedCard, count);
+
+        Runnable coinFly = () -> animateBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint, balance, bottom, close, count);
+        if (count == 2 && panel != null && selectedCard != null) {
+            showBiliCoinLightning(panel, selectedCard, coinFly);
+        } else if (panel != null) {
+            panel.postDelayed(coinFly, 60L);
+        } else {
+            coinFly.run();
+        }
+    }
+
+    private void animateBiliCoinSubmit(Dialog dialog, FrameLayout panel, FrameLayout selectedCard,
+                                       ImageView mascot, View hint, View balance, View bottom, View close, int count) {
+        if (panel == null || selectedCard == null || selectedCard.getChildCount() < 2) {
+            finishBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint, balance, bottom, close, null, count);
+            return;
+        }
+
+        View sourceCoin = selectedCard.getChildAt(1);
+        ViewGroup.LayoutParams sourceParams = sourceCoin.getLayoutParams();
+        int width = Math.max(1, sourceCoin.getWidth() > 0 ? sourceCoin.getWidth() : sourceParams.width);
+        int height = Math.max(1, sourceCoin.getHeight() > 0 ? sourceCoin.getHeight() : sourceParams.height);
+        int[] panelLocation = new int[2];
+        int[] coinLocation = new int[2];
+        panel.getLocationOnScreen(panelLocation);
+        sourceCoin.getLocationOnScreen(coinLocation);
+
+        ImageView flyingCoin = new ImageView(this);
+        flyingCoin.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        flyingCoin.setImageResource(count == 1 ? R.drawable.ic_bili_coin_1_text : R.drawable.ic_bili_coin_2_text);
+        FrameLayout.LayoutParams flyParams = new FrameLayout.LayoutParams(width, height, Gravity.TOP | Gravity.LEFT);
+        flyParams.leftMargin = coinLocation[0] - panelLocation[0];
+        flyParams.topMargin = coinLocation[1] - panelLocation[1];
+        panel.addView(flyingCoin, flyParams);
+
+        sourceCoin.setAlpha(0f);
+        flyingCoin.animate()
+                .translationX(0f)
+                .translationY(-biliCoinSheetHeight() * (count == 1 ? 0.132f : 0.132f))
+                .scaleX(count == 1 ? 0.82f : 0.86f)
+                .scaleY(count == 1 ? 0.82f : 0.86f)
+                .alpha(0f)
+                .setDuration(count == 1 ? 310L : 300L)
+                .setInterpolator(new DecelerateInterpolator(1.45f))
+                .start();
+
+        panel.postDelayed(() -> finishBiliCoinSubmit(dialog, panel, selectedCard, mascot, hint,
+                balance, bottom, close, flyingCoin, count), count == 1 ? 430L : 380L);
+    }
+
+    private void finishBiliCoinSubmit(Dialog dialog, FrameLayout panel, View selectedCard,
+                                      View mascot, View hint, View balance, View bottom, View close,
+                                      View flyingCoin, int count) {
+        View[] fading = new View[]{selectedCard, mascot, hint, balance, bottom, close};
+        for (View view : fading) {
+            if (view == null) continue;
+            view.animate().cancel();
+            view.animate().alpha(0f).setDuration(220L).start();
+        }
+        Runnable finish = () -> {
+            if (flyingCoin != null && flyingCoin.getParent() instanceof ViewGroup) {
+                ((ViewGroup) flyingCoin.getParent()).removeView(flyingCoin);
+            }
+            showCoinFly(count);
+            if (dialog != null && dialog.isShowing()) dialog.dismiss();
+            Toast.makeText(this, "投币接口暂未接入，已更新本地状态", Toast.LENGTH_SHORT).show();
+        };
+        if (panel != null) {
+            panel.postDelayed(finish, 230L);
+        } else {
+            finish.run();
+        }
+    }
+
+    private void showBiliCoinLightning(FrameLayout panel, FrameLayout card, Runnable endAction) {
+        if (panel == null || card == null) {
+            if (endAction != null) endAction.run();
+            return;
+        }
+        BiliCoinLightningView lightning = new BiliCoinLightningView(this);
+        updateBiliCoinLightningBounds(panel, card, lightning);
+        panel.addView(lightning, new FrameLayout.LayoutParams(-1, -1));
+
+        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        animator.setDuration(235L);
+        animator.setInterpolator(new DecelerateInterpolator(1.2f));
+        animator.addUpdateListener(animation -> {
+            updateBiliCoinLightningBounds(panel, card, lightning);
+            lightning.setProgress((float) animation.getAnimatedValue());
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (lightning.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) lightning.getParent()).removeView(lightning);
+                }
+                if (endAction != null) endAction.run();
+            }
+        });
+        animator.start();
+    }
+
+    private void updateBiliCoinLightningBounds(FrameLayout panel, FrameLayout card, BiliCoinLightningView lightning) {
+        if (panel == null || card == null || lightning == null) return;
+        float left = card.getLeft() + card.getTranslationX();
+        float top = card.getTop() + card.getTranslationY();
+        lightning.setCardBounds(new RectF(left, top, left + card.getWidth(), top + card.getHeight()));
+    }
+
+    private void performBiliCoin(Dialog dialog, int count, boolean alsoLike) {
+        if (alsoLike && currentItem != null && !currentItem.liked) {
+            likeCurrentFromGesture(false);
+        }
+        showCoinFly(count);
+        if (dialog != null) dialog.dismiss();
+        Toast.makeText(this, "投币接口暂未接入，已更新本地状态", Toast.LENGTH_SHORT).show();
+    }
+
+    private String coinBalanceText() {
+        return coinBalanceCache >= 0d
+                ? String.format(Locale.CHINA, "%.1f", coinBalanceCache)
+                : "-";
+    }
+
+    private void updateCoinBalanceAsync(TextView target) {
+        long now = SystemClock.uptimeMillis();
+        if (coinBalanceCache >= 0d && now - coinBalanceCacheTimeMs < 60_000L) {
+            target.setText("硬币余额：" + coinBalanceText());
+            return;
+        }
+        target.setText("硬币余额：-");
+        new Thread(() -> {
+            try {
+                double balance = repository.apiClient().fetchCoinBalance();
+                if (balance >= 0d) {
+                    coinBalanceCache = balance;
+                    coinBalanceCacheTimeMs = SystemClock.uptimeMillis();
+                    runOnUiThread(() -> target.setText("硬币余额：" + coinBalanceText()));
+                }
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
     private void showCoinSheet() {
         if (currentItem == null) return;
         Dialog dialog = new Dialog(this);
@@ -6814,27 +7965,6 @@ public final class MainActivity extends Activity {
     }
 
     private void showCoinFly(int count) {
-        for (int i = 0; i < count; i++) {
-            TextView coin = text("币", 24, 0xFFFFD166, Typeface.BOLD);
-            coin.setGravity(Gravity.CENTER);
-            coin.setBackground(rounded(0xFFFFC83D, dp(18)));
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(36), dp(36));
-            params.leftMargin = root.getWidth() / 2 - dp(18);
-            params.topMargin = root.getHeight() - dp(330) - i * dp(14);
-            root.addView(coin, params);
-            coin.setAlpha(0.95f);
-            coin.animate()
-                    .translationX(dp(360))
-                    .translationY(-dp(360) - i * dp(24))
-                    .rotation(540f)
-                    .scaleX(0.6f)
-                    .scaleY(0.6f)
-                    .alpha(0f)
-                    .setStartDelay(i * 90L)
-                    .setDuration(760)
-                    .withEndAction(() -> root.removeView(coin))
-                    .start();
-        }
         if (currentItem != null && !currentCoined) {
             currentCoined = true;
             currentItem.coinCount += Math.max(1, count);
@@ -6843,7 +7973,6 @@ public final class MainActivity extends Activity {
         }
         coinButton.setIconColor(BILI_PINK);
         if (landscapeCoinButton != null) landscapeCoinButton.setIconColor(BILI_PINK);
-        coinButton.playLottieAnimation();
     }
 
     private void handleFavoriteClick() {
@@ -7535,6 +8664,38 @@ public final class MainActivity extends Activity {
                 return "360P 流畅";
             default:
                 return fallback;
+        }
+    }
+
+    private String landscapeClarityButtonLabel() {
+        int quality = currentVideo == null || currentVideo.playInfo == null
+                ? globalPreferredQn
+                : currentVideo.playInfo.quality;
+        switch (quality) {
+            case 127:
+                return "8K";
+            case 126:
+                return "杜比";
+            case 125:
+                return "HDR";
+            case 120:
+                return "4K";
+            case 116:
+                return "1080P60";
+            case 112:
+                return "1080P+";
+            case 80:
+                return "1080P";
+            case 64:
+                return "720P";
+            case 32:
+                return "480P";
+            case 16:
+                return "360P";
+            default:
+                if (currentClarity == null || currentClarity.trim().isEmpty()) return "自动";
+                int space = currentClarity.indexOf(' ');
+                return space > 0 ? currentClarity.substring(0, space) : currentClarity;
         }
     }
 
@@ -8279,7 +9440,33 @@ public final class MainActivity extends Activity {
             updateProgressFill(progressFill, position, duration);
             updateProgressFill(lightProgressFill, position, duration);
         }
+        updatePausedOverlay();
         updateLightControlsPlaybackState();
+    }
+
+    private void updatePausedOverlay() {
+        if (pauseOverlay == null || player == null) return;
+        boolean commentsVisible = commentsPanel != null && commentsPanel.getVisibility() == View.VISIBLE;
+        boolean shouldShow = !landscapeMode
+                && !commentsVisible
+                && currentItem != null
+                && player.getPlaybackState() == Player.STATE_READY
+                && !player.isPlaying();
+        if (shouldShow) {
+            long duration = player.getDuration();
+            if (duration <= 0) duration = currentItem.durationSeconds * 1000L;
+            long displayPosition = progressDragPositionMs >= 0
+                    ? progressDragPositionMs
+                    : player.getCurrentPosition();
+            pauseOverlay.setProgressText(
+                    formatMillis(displayPosition),
+                    formatPauseDurationMillis(duration));
+            pauseOverlay.setVisibility(View.VISIBLE);
+            pauseOverlay.bringToFront();
+            if (centerOverlay != null) centerOverlay.bringToFront();
+        } else {
+            pauseOverlay.setVisibility(View.GONE);
+        }
     }
 
     private void updateProgressFill(View fillView, long position, long duration) {
@@ -8307,9 +9494,10 @@ public final class MainActivity extends Activity {
     }
 
     private void updateSeekTvEyesFromDelta(float deltaX) {
-        if (Math.abs(deltaX) < 0.2f) return;
-        float target = Math.max(-1f, Math.min(1f, deltaX / Math.max(1f, dp(7))));
-        updateSeekTvEyes(target, false);
+        if (Math.abs(deltaX) < 0.6f) return;
+        seekTvEyeTarget = Math.max(-1f, Math.min(1f,
+                seekTvEyeTarget + deltaX / Math.max(1f, dp(34))));
+        updateSeekTvEyes(seekTvEyeTarget, false);
     }
 
     private void updateSeekTvEyes(float target, boolean animate) {
@@ -8317,9 +9505,14 @@ public final class MainActivity extends Activity {
         if (lightProgressThumb != null) lightProgressThumb.setEyeDirection(target, animate);
     }
 
+    private void resetSeekTvEyes(boolean animate) {
+        seekTvEyeTarget = 0f;
+        updateSeekTvEyes(0f, animate);
+    }
+
     private boolean shouldDrawSeekTvFace(SeekTvThumbView thumb) {
         return (thumb == progressThumb && progressDragging)
-                || (thumb == lightProgressThumb && landscapeProgressDragging);
+                || (thumb == lightProgressThumb && landscapeMode);
     }
 
     private void updateLightControlsPlaybackState() {
@@ -8329,8 +9522,11 @@ public final class MainActivity extends Activity {
         }
         long duration = player.getDuration();
         if (duration <= 0) duration = currentItem == null ? 0 : currentItem.durationSeconds * 1000L;
+        long displayPosition = progressDragPositionMs >= 0
+                ? progressDragPositionMs
+                : player.getCurrentPosition();
         if (lightTimeView != null) {
-            lightTimeView.setText(formatMillis(player.getCurrentPosition()));
+            lightTimeView.setText(formatMillis(displayPosition));
         }
         if (landscapeDurationView != null) {
             landscapeDurationView.setText(formatMillis(duration));
@@ -8338,11 +9534,12 @@ public final class MainActivity extends Activity {
         if (landscapeStatusTimeView != null) {
             landscapeStatusTimeView.setText(currentClockText());
         }
+        updateLandscapeStatusIndicators();
         if (landscapeSpeedView != null) {
             landscapeSpeedView.setText("倍速");
         }
         if (landscapeClarityView != null) {
-            landscapeClarityView.setText(currentClarity);
+            landscapeClarityView.setText(landscapeClarityButtonLabel());
         }
     }
 
@@ -8362,6 +9559,7 @@ public final class MainActivity extends Activity {
         long duration = player == null ? 0L : player.getDuration();
         updateProgressFill(progressFill, position, duration);
         updateProgressFill(lightProgressFill, position, duration);
+        updatePausedOverlay();
         updateLightControlsPlaybackState();
     }
 
@@ -8375,6 +9573,53 @@ public final class MainActivity extends Activity {
         int width = Math.max(1, root.getWidth());
         long deltaMs = Math.round(duration * ((rawX - landscapeProgressStartX) / width));
         return Math.max(0L, Math.min(duration, start + deltaMs));
+    }
+
+    private long portraitVideoProgressPositionFor(float rawX) {
+        if (player == null || root == null) return -1L;
+        long duration = player.getDuration();
+        if (duration <= 0) return -1L;
+        long start = progressStartPositionMs >= 0L
+                ? progressStartPositionMs
+                : Math.max(0L, player.getCurrentPosition());
+        int width = Math.max(1, rootWidth());
+        long deltaMs = Math.round(duration * ((rawX - progressStartTouchX) / width));
+        return Math.max(0L, Math.min(duration, start + deltaMs));
+    }
+
+    private void previewPortraitVideoProgressAt(float rawX) {
+        long position = portraitVideoProgressPositionFor(rawX);
+        if (position < 0 || player == null) return;
+        if (!Float.isNaN(progressLastTouchX)) {
+            updateSeekTvEyesFromDelta(rawX - progressLastTouchX);
+        }
+        progressLastTouchX = rawX;
+        progressDragPositionMs = position;
+        long duration = player.getDuration();
+        int bubbleWidth = root == null ? Math.max(1, rootWidth()) : Math.max(1, root.getWidth());
+        float bubbleX = duration > 0 ? bubbleWidth * (position / (float) duration) : rawX;
+        showProgressBubbleForPosition(position, bubbleX, bubbleWidth);
+        updateProgressFill(progressFill, position, duration);
+        updateProgressFill(lightProgressFill, position, duration);
+        updatePausedOverlay();
+        updateLightControlsPlaybackState();
+    }
+
+    private void commitPortraitVideoProgressAt(float rawX) {
+        long position = portraitVideoProgressPositionFor(rawX);
+        if (position < 0 && progressDragPositionMs >= 0) position = progressDragPositionMs;
+        if (position < 0) return;
+        seekToPositionFromUser(position);
+        progressDragPositionMs = -1L;
+        progressStartPositionMs = -1L;
+    }
+
+    private void resetPortraitProgressDragState() {
+        progressDragging = false;
+        progressDragPositionMs = -1L;
+        progressStartPositionMs = -1L;
+        progressStartTouchX = Float.NaN;
+        progressLastTouchX = Float.NaN;
     }
 
     private void previewLandscapeProgressAt(float rawX) {
@@ -8584,6 +9829,15 @@ public final class MainActivity extends Activity {
         return String.format(Locale.CHINA, "%02d:%02d", minutes, seconds);
     }
 
+    private String formatPauseDurationMillis(long ms) {
+        long totalSeconds = Math.max(0L, ms / 1000L);
+        long hours = totalSeconds / 3600L;
+        if (hours <= 0) return formatMillis(ms);
+        long minutes = (totalSeconds / 60L) % 60L;
+        long seconds = totalSeconds % 60L;
+        return String.format(Locale.CHINA, "%02d:%02d:%02d", hours, minutes, seconds);
+    }
+
     private String currentPlaybackTimeText() {
         if (player == null) return "00:00 / 00:00";
         long duration = player.getDuration();
@@ -8593,6 +9847,141 @@ public final class MainActivity extends Activity {
 
     private String currentClockText() {
         return new SimpleDateFormat("HH:mm", Locale.CHINA).format(new Date());
+    }
+
+    private void registerLandscapeStatusReceivers() {
+        IntentFilter batteryFilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryIntent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            batteryIntent = registerReceiver(batteryStatusReceiver, batteryFilter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            batteryIntent = registerReceiver(batteryStatusReceiver, batteryFilter);
+        }
+        updateBatteryStatus(batteryIntent);
+
+        ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                uiHandler.post(MainActivity.this::updateLandscapeStatusIndicators);
+            }
+
+            @Override
+            public void onLost(Network network) {
+                uiHandler.post(MainActivity.this::updateLandscapeStatusIndicators);
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities networkCapabilities) {
+                uiHandler.post(MainActivity.this::updateLandscapeStatusIndicators);
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+            networkCallbackRegistered = true;
+        } catch (RuntimeException ignored) {
+            networkCallback = null;
+            networkCallbackRegistered = false;
+        }
+    }
+
+    private void unregisterLandscapeStatusReceivers() {
+        try {
+            unregisterReceiver(batteryStatusReceiver);
+        } catch (RuntimeException ignored) {
+        }
+        if (networkCallbackRegistered && networkCallback != null) {
+            ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (connectivityManager != null) {
+                try {
+                    connectivityManager.unregisterNetworkCallback(networkCallback);
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        networkCallback = null;
+        networkCallbackRegistered = false;
+    }
+
+    private void updateBatteryStatus(Intent intent) {
+        if (intent != null) {
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level >= 0 && scale > 0) {
+                landscapeBatteryPercent = Math.max(0, Math.min(100, Math.round(level * 100f / scale)));
+            }
+            int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
+            landscapeBatteryCharging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                    || status == BatteryManager.BATTERY_STATUS_FULL;
+        }
+        updateLandscapeStatusIndicators();
+    }
+
+    private void updateLandscapeStatusIndicators() {
+        if (landscapeNetworkView != null) {
+            landscapeNetworkView.setText(currentNetworkLabel());
+        }
+        if (landscapeBatteryIconView != null) {
+            landscapeBatteryIconView.setBatteryState(landscapeBatteryPercent, landscapeBatteryCharging);
+        }
+    }
+
+    private String currentNetworkLabel() {
+        ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return "";
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network activeNetwork = connectivityManager.getActiveNetwork();
+                if (activeNetwork == null) return "";
+                NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(activeNetwork);
+                if (capabilities == null) return "";
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "WIFI";
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return currentCellularGenerationLabel();
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "LAN";
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return "";
+    }
+
+    private String currentCellularGenerationLabel() {
+        int type = TelephonyManager.NETWORK_TYPE_UNKNOWN;
+        TelephonyManager telephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+        if (telephonyManager != null) {
+            try {
+                type = telephonyManager.getDataNetworkType();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type == TelephonyManager.NETWORK_TYPE_NR) {
+            return "5G";
+        }
+        switch (type) {
+            case TelephonyManager.NETWORK_TYPE_LTE:
+            case TelephonyManager.NETWORK_TYPE_IWLAN:
+                return "4G";
+            case TelephonyManager.NETWORK_TYPE_UMTS:
+            case TelephonyManager.NETWORK_TYPE_EVDO_0:
+            case TelephonyManager.NETWORK_TYPE_EVDO_A:
+            case TelephonyManager.NETWORK_TYPE_HSDPA:
+            case TelephonyManager.NETWORK_TYPE_HSUPA:
+            case TelephonyManager.NETWORK_TYPE_HSPA:
+            case TelephonyManager.NETWORK_TYPE_EVDO_B:
+            case TelephonyManager.NETWORK_TYPE_EHRPD:
+            case TelephonyManager.NETWORK_TYPE_HSPAP:
+            case TelephonyManager.NETWORK_TYPE_TD_SCDMA:
+                return "3G";
+            case TelephonyManager.NETWORK_TYPE_GPRS:
+            case TelephonyManager.NETWORK_TYPE_EDGE:
+            case TelephonyManager.NETWORK_TYPE_CDMA:
+            case TelephonyManager.NETWORK_TYPE_1xRTT:
+            case TelephonyManager.NETWORK_TYPE_IDEN:
+            case TelephonyManager.NETWORK_TYPE_GSM:
+                return "2G";
+            default:
+                return "3G";
+        }
     }
 
     private String speedLabel(float speed) {
@@ -9228,6 +10617,90 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private final class PauseOverlayView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private final Rect iconDst = new Rect();
+        private final Bitmap tvIcon;
+        private String currentText = "00:00";
+        private String durationText = "00:00";
+
+        PauseOverlayView(Context context) {
+            super(context);
+            setWillNotDraw(false);
+            setClickable(false);
+            paint.setFilterBitmap(true);
+            tvIcon = BitmapFactory.decodeResource(getResources(), R.drawable.ic_bili_pause_tv);
+        }
+
+        void setProgressText(String current, String duration) {
+            currentText = current == null ? "00:00" : current;
+            durationText = duration == null ? "00:00" : duration;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+
+            float iconWidth = Math.min(w * 0.20f, h * 0.105f);
+            float iconHeight = tvIcon == null || tvIcon.getWidth() <= 0
+                    ? iconWidth * 0.92f
+                    : iconWidth * tvIcon.getHeight() / Math.max(1f, tvIcon.getWidth()) * 1.10f;
+            float centerX = w * 0.50f;
+            float centerY = h * 0.475f;
+            float bodyLeft = centerX - iconWidth / 2f;
+            float bodyTop = centerY - iconHeight / 2f - iconWidth * 0.015f;
+            float bodyRight = centerX + iconWidth / 2f;
+            float bodyBottom = bodyTop + iconHeight;
+            iconDst.set(
+                    Math.round(bodyLeft),
+                    Math.round(bodyTop),
+                    Math.round(bodyRight),
+                    Math.round(bodyBottom));
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColorFilter(null);
+            if (tvIcon != null) {
+                canvas.drawBitmap(tvIcon, null, iconDst, paint);
+            } else {
+                paint.setColor(0xAA3B3B3B);
+                rect.set(bodyLeft, bodyTop, bodyRight, bodyBottom);
+                canvas.drawRoundRect(rect, iconWidth * 0.16f, iconWidth * 0.16f, paint);
+                float playSize = iconWidth * 0.46f;
+                Path triangle = new Path();
+                triangle.moveTo(centerX - playSize * 0.20f, bodyTop + iconHeight * 0.34f);
+                triangle.lineTo(centerX - playSize * 0.20f, bodyTop + iconHeight * 0.66f);
+                triangle.lineTo(centerX + playSize * 0.28f, bodyTop + iconHeight * 0.50f);
+                triangle.close();
+                paint.setColor(0xE0000000);
+                canvas.drawPath(triangle, paint);
+            }
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            paint.setTextSize(Math.max(32f, w * 0.048f));
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setShadowLayer(3f, 0f, 1f, 0xAA000000);
+            String separator = " / ";
+            float currentWidth = paint.measureText(currentText);
+            float separatorWidth = paint.measureText(separator);
+            float durationWidth = paint.measureText(durationText);
+            float textX = centerX - (currentWidth + separatorWidth + durationWidth) / 2f;
+            float baseline = bodyBottom + iconWidth * 0.48f;
+            paint.setColor(Color.WHITE);
+            canvas.drawText(currentText, textX, baseline, paint);
+            textX += currentWidth;
+            paint.setColor(0xAA4C4C4C);
+            canvas.drawText(separator, textX, baseline, paint);
+            textX += separatorWidth;
+            canvas.drawText(durationText, textX, baseline, paint);
+            paint.clearShadowLayer();
+        }
+    }
+
     private final class SeekTvThumbView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
@@ -9330,12 +10803,20 @@ public final class MainActivity extends Activity {
         private final int kind;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
+        private int batteryPercent = 100;
+        private boolean batteryCharging;
 
         LandscapeIconView(Context context, int kind) {
             super(context);
             this.kind = kind;
             setWillNotDraw(false);
             setClickable(kind != BATTERY && kind != SIDE_CHEVRON && kind != PROGRESS_THUMB && kind != TREASURE);
+        }
+
+        void setBatteryState(int percent, boolean charging) {
+            batteryPercent = Math.max(0, Math.min(100, percent));
+            batteryCharging = charging;
+            invalidate();
         }
 
         @Override
@@ -9357,8 +10838,25 @@ public final class MainActivity extends Activity {
                 rect.set(w * 0.84f, h * 0.40f, w * 0.94f, h * 0.60f);
                 canvas.drawRoundRect(rect, h * 0.05f, h * 0.05f, paint);
                 paint.setStyle(Paint.Style.FILL);
-                rect.set(w * 0.18f, h * 0.37f, w * 0.35f, h * 0.63f);
-                canvas.drawRoundRect(rect, h * 0.04f, h * 0.04f, paint);
+                float innerLeft = w * 0.18f;
+                float innerTop = h * 0.37f;
+                float innerRight = w * 0.74f;
+                float innerBottom = h * 0.63f;
+                float fillRight = innerLeft + (innerRight - innerLeft) * batteryPercent / 100f;
+                if (fillRight > innerLeft) {
+                    rect.set(innerLeft, innerTop, fillRight, innerBottom);
+                    canvas.drawRoundRect(rect, h * 0.04f, h * 0.04f, paint);
+                }
+                if (batteryCharging) {
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(Math.max(1.5f, Math.min(w, h) * 0.055f));
+                    Path bolt = new Path();
+                    bolt.moveTo(w * 0.49f, h * 0.33f);
+                    bolt.lineTo(w * 0.40f, h * 0.55f);
+                    bolt.lineTo(w * 0.51f, h * 0.55f);
+                    bolt.lineTo(w * 0.43f, h * 0.73f);
+                    canvas.drawPath(bolt, paint);
+                }
                 return;
             }
 
@@ -9423,6 +10921,88 @@ public final class MainActivity extends Activity {
                 rect.set(w * 0.57f, h * 0.32f, w * 0.67f, h * 0.68f);
                 canvas.drawRoundRect(rect, h * 0.03f, h * 0.03f, paint);
             }
+        }
+    }
+
+    private final class BiliCoinLightningView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF cardBounds = new RectF();
+        private float progress;
+
+        BiliCoinLightningView(Context context) {
+            super(context);
+            setWillNotDraw(false);
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        }
+
+        void setCardBounds(RectF bounds) {
+            cardBounds.set(bounds);
+            invalidate();
+        }
+
+        void setProgress(float value) {
+            progress = Math.max(0f, Math.min(1f, value));
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (cardBounds.isEmpty()) return;
+            float phase = (float) Math.sin(progress * Math.PI);
+            int alpha = Math.max(0, Math.min(255, Math.round(phase * 210f)));
+            if (alpha <= 0) return;
+
+            float w = cardBounds.width();
+            float h = cardBounds.height();
+            RectF glow = new RectF(cardBounds);
+            glow.inset(-w * 0.28f, -h * 0.18f);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0xFF49A9FF);
+            paint.setAlpha(Math.round(alpha * 0.24f));
+            canvas.drawOval(glow, paint);
+
+            Path right = new Path();
+            right.moveTo(cardBounds.right - w * 0.14f, cardBounds.top + h * 0.34f);
+            right.lineTo(cardBounds.right + w * 0.12f, cardBounds.top + h * 0.18f);
+            right.lineTo(cardBounds.right + w * 0.02f, cardBounds.top + h * 0.42f);
+            right.lineTo(cardBounds.right + w * 0.28f, cardBounds.top + h * 0.57f);
+            right.lineTo(cardBounds.right + w * 0.05f, cardBounds.top + h * 0.75f);
+
+            Path left = new Path();
+            left.moveTo(cardBounds.left + w * 0.18f, cardBounds.top + h * 0.45f);
+            left.lineTo(cardBounds.left - w * 0.10f, cardBounds.top + h * 0.26f);
+            left.lineTo(cardBounds.left + w * 0.02f, cardBounds.top + h * 0.53f);
+            left.lineTo(cardBounds.left - w * 0.24f, cardBounds.top + h * 0.68f);
+
+            Path bottom = new Path();
+            bottom.moveTo(cardBounds.left + w * 0.22f, cardBounds.bottom - h * 0.16f);
+            bottom.lineTo(cardBounds.left + w * 0.38f, cardBounds.bottom + h * 0.06f);
+            bottom.lineTo(cardBounds.left + w * 0.55f, cardBounds.bottom - h * 0.05f);
+            bottom.lineTo(cardBounds.left + w * 0.76f, cardBounds.bottom + h * 0.08f);
+
+            drawCoinElectricPath(canvas, left, alpha);
+            drawCoinElectricPath(canvas, right, alpha);
+            drawCoinElectricPath(canvas, bottom, Math.round(alpha * 0.82f));
+            paint.setAlpha(255);
+            paint.clearShadowLayer();
+        }
+
+        private void drawCoinElectricPath(Canvas canvas, Path path, int alpha) {
+            float base = Math.max(1f, Math.min(cardBounds.width(), cardBounds.height()));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeWidth(base * 0.038f);
+            paint.setColor(0xFF3DA8FF);
+            paint.setAlpha(Math.round(alpha * 0.76f));
+            paint.setShadowLayer(base * 0.061f, 0, 0, 0xCC298BFF);
+            canvas.drawPath(path, paint);
+            paint.setStrokeWidth(Math.max(1f, base * 0.012f));
+            paint.setColor(Color.WHITE);
+            paint.setAlpha(alpha);
+            paint.clearShadowLayer();
+            canvas.drawPath(path, paint);
         }
     }
 

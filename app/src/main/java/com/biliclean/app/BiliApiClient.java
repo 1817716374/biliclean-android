@@ -214,6 +214,7 @@ final class BiliApiClient {
         item.desc = firstNonEmpty(data.optString("desc"), item.desc);
         item.cover = firstNonEmpty(data.optString("pic"), item.cover);
         item.durationSeconds = data.optInt("duration", item.durationSeconds);
+        item.copyright = data.optInt("copyright", item.copyright);
 
         JSONObject owner = data.optJSONObject("owner");
         if (owner != null) {
@@ -228,6 +229,15 @@ final class BiliApiClient {
             item.width = dimension.optInt("width", item.width);
             item.height = dimension.optInt("height", item.height);
         }
+    }
+
+    double fetchCoinBalance() throws Exception {
+        if (authCookie.isEmpty()) return -1d;
+        JSONObject root = getJson("https://api.bilibili.com/x/web-interface/nav", "https://www.bilibili.com/");
+        if (root.optInt("code", -1) != 0) return -1d;
+        JSONObject data = root.optJSONObject("data");
+        if (data == null || !data.optBoolean("isLogin")) return -1d;
+        return data.optDouble("money", -1d);
     }
 
     void enrichStoryEntrance(FeedItem item) {
